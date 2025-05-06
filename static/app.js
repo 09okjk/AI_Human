@@ -184,16 +184,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 用于打字机效果的异步函数
             function typeWriterEffect(target, text, speed = 20) {
-                let i = 0;
-                let lastText = target.innerHTML;
+                // 只追加新内容（支持多次追加）
+                let prev = target.innerHTML;
+                let start = prev.length;
+                let i = start;
                 function type() {
                     if (i < text.length) {
-                        // 只追加新内容
-                        target.innerHTML = lastText + text.charAt(i);
+                        target.innerHTML = text.slice(0, i + 1);
                         i++;
                         setTimeout(type, speed);
-                    } else {
-                        lastText = target.innerHTML;
                     }
                 }
                 type();
@@ -240,11 +239,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
 
-            // Play audio response if we received any
-            if (audioBase64Chunks.length > 0) {
-                playAudioResponse(audioBase64Chunks);
+            // 不再自动调用playAudioResponse，彻底只用流式Web Audio API
+            // if (audioBase64Chunks.length > 0) {
+            //     playAudioResponse(audioBase64Chunks);
+            // }
+
+            // SSE流结束后，强制刷新最终文本，防止卡在“AI正在回复...”
+            if (aiTypingBuffer) {
+                messageElement.innerHTML = aiTypingBuffer;
+                console.log('[调试] 最终AI回复内容：', aiTypingBuffer);
             }
-            
             statusMessage.textContent = "回复完成";
         } catch (error) {
             console.error("Error sending message:", error);
