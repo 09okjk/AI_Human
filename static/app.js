@@ -134,7 +134,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             let aiResponseText = '';
             let aiTypingBuffer = '';
-            let audioBase64Chunks = [];
+            // --- 音频流式播放核心队列 ---
+            const audioChunkQueue = new AsyncQueue(); // 原始base64片段队列
+            const decodedAudioQueue = new AsyncQueue(); // 解码后AudioBuffer队列
             let audioStreamPlaying = false;
 
             // Create message placeholder for AI response
@@ -163,6 +165,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 使用更健壮的方式处理SSE数据
             let buffer = '';
+            // --- 启动音频解码worker和播放worker ---
+            startAudioDecodeWorker(audioChunkQueue, decodedAudioQueue);
+            startAudioPlayWorker(decodedAudioQueue);
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -181,12 +187,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 aiTypingBuffer += data.content;
                                 typeWriterEffect(messageElement, aiTypingBuffer);
                             } else if (data.type === 'audio' && data.content) {
-                                audioBase64Chunks.push(data.content);
-                                // 边收边播音频流
-                                if (!audioStreamPlaying) {
-                                    audioStreamPlaying = true;
-                                    playAudioStream(audioBase64Chunks, () => { audioStreamPlaying = false; });
-                                }
+                                // 音频片段入队，异步解码、异步播放
+                                audioChunkQueue.push(data.content);
                             } else if (data.type === 'transcript' && data.content) {
                                 console.log("Transcript:", data.content);
                                 if (!aiTypingBuffer) {
@@ -227,78 +229,88 @@ document.addEventListener('DOMContentLoaded', () => {
         chatMessages.scrollTop = chatMessages.scrollHeight;
     };
     
-    // Play audio response - 改进的音频播放功能（一次性播放所有片段）
+    // Play audio response - 保留兼容接口
     const playAudioResponse = async (base64Chunks) => {
-        playAudioStream(base64Chunks);
+        // 不再使用，流式播放由队列worker负责
     };
 
     // 音频流式播放：每收到新片段就尝试拼接并播放
     // callback: 播放结束后的回调
-    const playAudioStream = async (base64Chunks, callback) => {
-        try {
-            if (!audioContext) {
-                await initAudioContext();
-            }
-            console.log('[音频调试] base64Chunks.length =', base64Chunks.length);
-            if (base64Chunks.length === 0) {
-                statusMessage.textContent = '未收到音频数据';
-                return;
-            }
-            // 只播放第一个片段
-            let firstBase64 = base64Chunks[0];
-            console.log('[音频调试] 第一个片段长度:', firstBase64.length);
-            if (firstBase64.startsWith('data:audio/wav;base64,')) {
-                firstBase64 = firstBase64.substring('data:audio/wav;base64,'.length);
-            }
-            try {
-                atob(firstBase64.substring(0, 10));
-            } catch (e) {
-                console.error('[音频调试] Base64格式无效:', e);
-                statusMessage.textContent = '音频数据格式错误';
-                return;
-            }
-            const byteCharacters = atob(firstBase64);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: 'audio/wav' });
-            const audioUrl = URL.createObjectURL(blob);
-            if (currentAudioPlayer) {
-                currentAudioPlayer.pause();
-                currentAudioPlayer = null;
-            }
-            const audio = new Audio(audioUrl);
-            currentAudioPlayer = audio;
-            audio.onerror = (e) => {
-                console.error('[音频调试] 音频播放错误:', e);
-                statusMessage.textContent = '播放音频失败';
-                URL.revokeObjectURL(audioUrl);
-            };
-            audio.onended = () => {
-                currentAudioPlayer = null;
-                statusMessage.textContent = '就绪';
-                URL.revokeObjectURL(audioUrl);
-                if (callback) callback();
-            };
-            audio.oncanplaythrough = () => {
-                statusMessage.textContent = '正在播放回复...';
-                audio.play().catch(err => {
-                    console.error('[音频调试] 播放音频失败:', err);
-                    statusMessage.textContent = '播放音频失败';
-                });
-            };
-            setTimeout(() => {
-                if (audio.readyState < 3) {
-                    statusMessage.textContent = '音频加载中...';
-                }
-            }, 2000);
-        } catch (error) {
-            console.error('[音频调试] 处理音频时出错:', error);
-            statusMessage.textContent = '播放音频失败';
+    // --- 队列工具类 ---
+    class AsyncQueue {
+        constructor() {
+            this.queue = [];
+            this.resolvers = [];
         }
-    };
+        push(item) {
+            if (this.resolvers.length) {
+                this.resolvers.shift()(item);
+            } else {
+                this.queue.push(item);
+            }
+        }
+        async shift() {
+            if (this.queue.length) {
+                return this.queue.shift();
+            }
+            return new Promise(resolve => this.resolvers.push(resolve));
+        }
+    }
+
+    // --- 音频解码worker ---
+    function startAudioDecodeWorker(chunkQueue, bufferQueue) {
+        (async () => {
+            while (true) {
+                const base64Chunk = await chunkQueue.shift();
+                // 补齐WAV头部（假设后端只首片带头，其余为裸PCM）
+                let wavBase64 = base64Chunk;
+                if (!wavBase64.startsWith('data:audio/wav;base64,')) {
+                    wavBase64 = 'data:audio/wav;base64,' + wavBase64;
+                }
+                // 转成ArrayBuffer
+                try {
+                    const response = await fetch(wavBase64);
+                    const arrayBuffer = await response.arrayBuffer();
+                    if (!audioContext) {
+                        await initAudioContext();
+                    }
+                    audioContext.decodeAudioData(arrayBuffer, (audioBuffer) => {
+                        bufferQueue.push(audioBuffer);
+                    }, (e) => {
+                        console.error('[音频流式] 解码失败:', e);
+                    });
+                } catch (e) {
+                    console.error('[音频流式] fetch解码失败:', e);
+                }
+            }
+        })();
+    }
+    // --- 音频串行播放worker ---
+    function startAudioPlayWorker(bufferQueue) {
+        (async () => {
+            while (true) {
+                const audioBuffer = await bufferQueue.shift();
+                if (!audioBuffer) continue;
+                try {
+                    if (!audioContext) {
+                        await initAudioContext();
+                    }
+                    const source = audioContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioContext.destination);
+                    source.onended = () => {
+                        // 自动继续下一个
+                    };
+                    source.start(0);
+                    // 等待本段播完再播下一个
+                    await new Promise(res => source.onended = res);
+                } catch (e) {
+                    console.error('[音频流式] 播放失败:', e);
+                }
+            }
+        })();
+    }
+
 
     
     // Event Listeners
