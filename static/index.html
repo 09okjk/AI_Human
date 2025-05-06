@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 语音对话</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-robot"></i> AI 语音对话</h1>
+        </header>
+        
+        <div class="chat-container">
+            <div class="chat-messages" id="chat-messages">
+                <!-- Messages will be displayed here -->
+                <div class="welcome-message">
+                    <p>欢迎使用 AI 语音对话。点击麦克风按钮开始说话，或者直接输入文字。</p>
+                </div>
+            </div>
+            
+            <div class="chat-input">
+                <div class="text-input">
+                    <input type="text" id="text-input" placeholder="输入文字消息..." />
+                </div>
+                <div class="voice-controls">
+                    <button id="voice-button" class="voice-button">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                    <div id="recording-indicator" class="recording-indicator">
+                        <div class="recording-wave"></div>
+                        <div class="recording-wave"></div>
+                        <div class="recording-wave"></div>
+                    </div>
+                </div>
+                <button id="send-button" class="send-button">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+        
+        <div class="status-bar">
+            <div id="status-message">就绪</div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
