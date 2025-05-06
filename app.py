@@ -134,4 +134,10 @@ def text_only_chat():
 
 if __name__ == '__main__':
     # For LAN access, use '0.0.0.0' instead of 'localhost'
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Added SSL context for HTTPS support
+    app.run(
+        host='0.0.0.0',
+        port=5000,
+        debug=True,
+        ssl_context=('cert.pem', 'key.pem')  # 使用自签名证书启用HTTPS
+    )
