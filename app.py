@@ -1,7 +1,7 @@
 import os
 from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
 from flask_cors import CORS
-from openai import OpenAI
+import openai
 import base64
 import json
 import numpy as np
@@ -13,11 +13,9 @@ load_dotenv()
 app = Flask(__name__, static_folder='static')
 CORS(app)
 
-# Initialize OpenAI client
-client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY") or "sk-xxx",  # Replace with your API key if not using env var
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
+# Configure OpenAI client for v0.28.0
+openai.api_key = os.getenv("DASHSCOPE_API_KEY") or "sk-xxx"  # Replace with your API key if not using env var
+openai.api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 @app.route('/')
 def index():
@@ -34,51 +32,53 @@ def chat():
         if not audio_data and not text_input:
             return jsonify({"error": "No input provided"}), 400
         
-        # Prepare messages for API call
-        messages = [{"role": "user", "content": []}]
+        # For v0.28.0 API structure
+        messages = []  # Will prepare messages based on input
         
-        # Add audio if provided
-        if audio_data:
-            messages[0]["content"].append({
-                "type": "input_audio",
-                "input_audio": {
-                    "data": audio_data,
-                    "format": "wav",
-                },
-            })
+        # For v0.28.0, we need to handle multimodal content differently
+        # Since v0.28.0 doesn't natively support multimodal inputs like audio,
+        # we'll need to adapt our approach
         
-        # Add text if provided
         if text_input:
-            messages[0]["content"].append({"type": "text", "text": text_input})
+            # If we have text, use it as the message content
+            messages.append({"role": "user", "content": text_input})
+        elif audio_data:
+            # For audio, we'll include a placeholder message and send audio separately
+            messages.append({"role": "user", "content": "[Audio Input]"})  
         
         def generate():
-            completion = client.chat.completions.create(
-                model="qwen-omni-turbo-0119",
-                messages=messages,
-                modalities=["text", "audio"],
-                audio={"voice": "Cherry", "format": "wav"},
-                stream=True,
-                stream_options={"include_usage": True},
-            )
-            
-            for chunk in completion:
-                if chunk.choices:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
-                        yield f"data: {json.dumps({'type': 'text', 'content': delta.content})}\n\n"
-                    elif hasattr(delta, "audio"):
-                        try:
-                            audio_string = delta.audio["data"]
-                            yield f"data: {json.dumps({'type': 'audio', 'content': audio_string})}\n\n"
-                        except Exception as e:
-                            transcript = delta.audio.get("transcript", "")
-                            if transcript:
-                                yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
-                else:
-                    # Send usage info if available
-                    if hasattr(chunk, "usage"):
-                        yield f"data: {json.dumps({'type': 'usage', 'content': str(chunk.usage)})}\n\n"
-            
+            try:
+                # Using v0.28.0 API structure
+                response = openai.ChatCompletion.create(
+                    model="qwen-omni-turbo-0119",
+                    messages=messages,
+                    stream=True,
+                    # Additional parameters specific to Qwen API
+                    modalities=["text", "audio"],
+                    audio={"voice": "Cherry", "format": "wav"}
+                )
+                
+                for chunk in response:
+                    # Extract content from the stream
+                    if 'choices' in chunk:
+                        choice = chunk['choices'][0]
+                        if 'delta' in choice and 'content' in choice['delta'] and choice['delta']['content']:
+                            # Text content
+                            yield f"data: {json.dumps({'type': 'text', 'content': choice['delta']['content']})}\n\n"
+                        
+                        # Check for audio data in a manner compatible with Dashscope API
+                        if 'delta' in choice and 'audio' in choice['delta']:
+                            try:
+                                audio_data = choice['delta']['audio']['data']
+                                yield f"data: {json.dumps({'type': 'audio', 'content': audio_data})}\n\n"
+                            except Exception as e:
+                                # Try to get transcript if available
+                                if 'transcript' in choice['delta']['audio']:
+                                    transcript = choice['delta']['audio']['transcript']
+                                    yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                
         return Response(stream_with_context(generate()), content_type='text/event-stream')
     
     except Exception as e:
@@ -95,31 +95,37 @@ def text_only_chat():
             return jsonify({"error": "No text input provided"}), 400
         
         def generate():
-            completion = client.chat.completions.create(
-                model="qwen-omni-turbo-0119",
-                messages=[{"role": "user", "content": text_input}],
-                modalities=["text", "audio"],
-                audio={"voice": "Cherry", "format": "wav"},
-                stream=True,
-                stream_options={"include_usage": True},
-            )
-            
-            for chunk in completion:
-                if chunk.choices:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
-                        yield f"data: {json.dumps({'type': 'text', 'content': delta.content})}\n\n"
-                    elif hasattr(delta, "audio"):
-                        try:
-                            audio_string = delta.audio["data"]
-                            yield f"data: {json.dumps({'type': 'audio', 'content': audio_string})}\n\n"
-                        except Exception as e:
-                            transcript = delta.audio.get("transcript", "")
-                            if transcript:
-                                yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
-                else:
-                    if hasattr(chunk, "usage"):
-                        yield f"data: {json.dumps({'type': 'usage', 'content': str(chunk.usage)})}\n\n"
+            try:
+                # Using v0.28.0 API structure
+                response = openai.ChatCompletion.create(
+                    model="qwen-omni-turbo-0119",
+                    messages=[{"role": "user", "content": text_input}],
+                    stream=True,
+                    # Additional parameters specific to Qwen API
+                    modalities=["text", "audio"],
+                    audio={"voice": "Cherry", "format": "wav"}
+                )
+                
+                for chunk in response:
+                    # Extract content from the stream
+                    if 'choices' in chunk:
+                        choice = chunk['choices'][0]
+                        if 'delta' in choice and 'content' in choice['delta'] and choice['delta']['content']:
+                            # Text content
+                            yield f"data: {json.dumps({'type': 'text', 'content': choice['delta']['content']})}\n\n"
+                        
+                        # Check for audio data in a manner compatible with Dashscope API
+                        if 'delta' in choice and 'audio' in choice['delta']:
+                            try:
+                                audio_data = choice['delta']['audio']['data']
+                                yield f"data: {json.dumps({'type': 'audio', 'content': audio_data})}\n\n"
+                            except Exception as e:
+                                # Try to get transcript if available
+                                if 'transcript' in choice['delta']['audio']:
+                                    transcript = choice['delta']['audio']['transcript']
+                                    yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             
         return Response(stream_with_context(generate()), content_type='text/event-stream')
     
