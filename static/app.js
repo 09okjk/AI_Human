@@ -171,7 +171,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const decoder = new TextDecoder();
             
             let aiResponseText = '';
-            let aiTypingBuffer = '';
             let audioBase64Chunks = [];
             let audioStreamPlaying = false;
 
@@ -183,27 +182,68 @@ document.addEventListener('DOMContentLoaded', () => {
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
             // 用于打字机效果的异步函数
-            // 全局唯一typewriter动画
+            // 全局唯一typewriter动画与状态
             let typewriterTarget = null;
             let typewriterInterval = null;
             let typewriterIndex = 0;
+            let aiTypingBuffer = ''; // 所有文本片段累积缓冲
+            let isQuotedMessage = false; // 标记是否已添加了引号
 
-            function startTypewriter(target, speed = 20) {
+            // 重置所有状态
+            function resetTypewriter() {
+                if (typewriterInterval) {
+                    clearInterval(typewriterInterval);
+                    typewriterInterval = null;
+                }
+                typewriterTarget = null;
+                typewriterIndex = 0;
+                aiTypingBuffer = '';
+                isQuotedMessage = false;
+            }
+
+            // 添加新文本的统一入口
+            function addToTypingBuffer(content, isTranscript = false) {
+                if (isTranscript && !isQuotedMessage) {
+                    // 如果是transcript类型且还没有引号，添加前引号
+                    isQuotedMessage = true;
+                    aiTypingBuffer = `"${content}`;
+                } else {
+                    // 其他情况直接追加
+                    aiTypingBuffer += content;
+                }
+                console.log('[DEBUG] 累计文本:', aiTypingBuffer);
+                return aiTypingBuffer;
+            }
+
+            // 控制打字机效果
+            function startTypewriter(target, speed = 15) {
                 typewriterTarget = target;
-                if (typewriterInterval) return; // 已有动画在跑，直接等它补全
-                typewriterIndex = target.innerHTML.length;
+                
+                // 如果打字机正在运行，则不需要重新启动
+                if (typewriterInterval) return; 
+                
                 typewriterInterval = setInterval(() => {
+                    // 确保情况变化时能正确更新DOM
                     if (typewriterIndex < aiTypingBuffer.length) {
-                        typewriterTarget.innerHTML += aiTypingBuffer.charAt(typewriterIndex);
+                        if (typewriterIndex === 0) {
+                            typewriterTarget.innerHTML = aiTypingBuffer.charAt(0);
+                        } else {
+                            typewriterTarget.innerHTML += aiTypingBuffer.charAt(typewriterIndex);
+                        }
                         typewriterIndex++;
+                        // 每次打字后自动滚动到最新位置
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
                     } else {
-                        // 已补全到当前目标，等待新片段
+                        // 已补全到当前目标缓冲区，暂停等待新片段
                         clearInterval(typewriterInterval);
                         typewriterInterval = null;
                     }
                 }, speed);
             }
 
+            // 在初始化时重置打字机状态
+            resetTypewriter();
+            
             // 使用更健壮的方式处理SSE数据
             let buffer = '';
             while (true) {
@@ -220,8 +260,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             const jsonStr = line.substring(5).trim();
                             const data = JSON.parse(jsonStr);
                             if (data.type === 'text' && data.content) {
-                                // 实现逐字打字机效果
-                                aiTypingBuffer += data.content;
+                                // 统一流程处理文本
+                                addToTypingBuffer(data.content, false);
                                 startTypewriter(messageElement);
                             } else if (data.type === 'audio' && data.content) {
                                 audioBase64Chunks.push(data.content);
@@ -229,15 +269,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 audioSystem.addAudioChunk(data.content);
                             } else if (data.type === 'transcript' && data.content) {
                                 console.log("Transcript:", data.content);
-                                // 每次都累加transcript内容，不只是第一次
-                                if (!aiTypingBuffer) {
-                                    // 第一次收到时添加引号
-                                    aiTypingBuffer = `"${data.content}`;
-                                } else {
-                                    // 后续收到的内容直接追加
-                                    aiTypingBuffer += data.content;
-                                }
-                                // 每次都执行打字机效果
+                                // 统一流程处理转录文本
+                                addToTypingBuffer(data.content, true);
                                 startTypewriter(messageElement);
                             } else if (data.type === 'error') {
                                 console.error("服务器错误:", data.content);
@@ -251,22 +284,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
 
-            // 不再自动调用playAudioResponse，彻底只用流式Web Audio API
-            // if (audioBase64Chunks.length > 0) {
-            //     playAudioResponse(audioBase64Chunks);
-            // }
-
-            // SSE流结束后，强制刷新最终文本，防止卡在“AI正在回复...”
+            // SSE流结束后，平滑处理最终文本
             if (aiTypingBuffer) {
-                // 结束动画，强制刷新最终文本
-                if (typewriterInterval) {
-                    clearInterval(typewriterInterval);
-                    typewriterInterval = null;
+                // 如果是引用式消息，添加右引号
+                if (isQuotedMessage && !aiTypingBuffer.endsWith('"')) {
+                    console.log('[调试] 添加结束引号');  
+                    aiTypingBuffer += '"';
                 }
-                messageElement.innerHTML = aiTypingBuffer;
+                
+                // 不立即结束动画，继续打字机效果
+                startTypewriter(messageElement);
                 console.log('[调试] 最终AI回复内容：', aiTypingBuffer);
+                
+                // 等待打字机效果自然完成后再更新状态
+                const checkComplete = setInterval(() => {
+                    if (!typewriterInterval) {
+                        clearInterval(checkComplete);
+                        statusMessage.textContent = "回复完成";
+                    }
+                }, 100);
+            } else {
+                statusMessage.textContent = "回复完成";
             }
-            statusMessage.textContent = "回复完成";
         } catch (error) {
             console.error("Error sending message:", error);
             statusMessage.textContent = "发送消息失败";
