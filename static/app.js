@@ -231,7 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 console.log("Transcript:", data.content);
                                 if (!aiTypingBuffer) {
                                     aiTypingBuffer = `"${data.content}" `;
-                                    typeWriterEffect(messageElement, aiTypingBuffer);
+                                    startTypewriter(messageElement);
                                 }
                             } else if (data.type === 'error') {
                                 console.error("服务器错误:", data.content);
