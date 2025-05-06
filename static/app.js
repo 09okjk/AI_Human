@@ -239,21 +239,25 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!audioContext) {
                 await initAudioContext();
             }
-            // 如果当前有音频在播放，保持不变（流式拼接）
-            // 合并所有音频片段
-            let fullBase64 = base64Chunks.join('');
-            if (fullBase64.startsWith('data:audio/wav;base64,')) {
-                fullBase64 = fullBase64.substring('data:audio/wav;base64,'.length);
-            }
-            try {
-                atob(fullBase64.substring(0, 10));
-            } catch (e) {
-                console.error("Base64 格式无效:", e);
-                statusMessage.textContent = "音频数据格式错误";
+            console.log('[音频调试] base64Chunks.length =', base64Chunks.length);
+            if (base64Chunks.length === 0) {
+                statusMessage.textContent = '未收到音频数据';
                 return;
             }
-            // 生成 Blob 并播放
-            const byteCharacters = atob(fullBase64);
+            // 只播放第一个片段
+            let firstBase64 = base64Chunks[0];
+            console.log('[音频调试] 第一个片段长度:', firstBase64.length);
+            if (firstBase64.startsWith('data:audio/wav;base64,')) {
+                firstBase64 = firstBase64.substring('data:audio/wav;base64,'.length);
+            }
+            try {
+                atob(firstBase64.substring(0, 10));
+            } catch (e) {
+                console.error('[音频调试] Base64格式无效:', e);
+                statusMessage.textContent = '音频数据格式错误';
+                return;
+            }
+            const byteCharacters = atob(firstBase64);
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
                 byteNumbers[i] = byteCharacters.charCodeAt(i);
@@ -261,7 +265,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const byteArray = new Uint8Array(byteNumbers);
             const blob = new Blob([byteArray], { type: 'audio/wav' });
             const audioUrl = URL.createObjectURL(blob);
-            // 如果当前有音频在播放，暂停并替换
             if (currentAudioPlayer) {
                 currentAudioPlayer.pause();
                 currentAudioPlayer = null;
@@ -269,33 +272,34 @@ document.addEventListener('DOMContentLoaded', () => {
             const audio = new Audio(audioUrl);
             currentAudioPlayer = audio;
             audio.onerror = (e) => {
-                console.error("音频播放错误:", e);
-                statusMessage.textContent = "播放音频失败";
+                console.error('[音频调试] 音频播放错误:', e);
+                statusMessage.textContent = '播放音频失败';
                 URL.revokeObjectURL(audioUrl);
             };
             audio.onended = () => {
                 currentAudioPlayer = null;
-                statusMessage.textContent = "就绪";
+                statusMessage.textContent = '就绪';
                 URL.revokeObjectURL(audioUrl);
                 if (callback) callback();
             };
             audio.oncanplaythrough = () => {
-                statusMessage.textContent = "正在播放回复...";
+                statusMessage.textContent = '正在播放回复...';
                 audio.play().catch(err => {
-                    console.error("播放音频失败:", err);
-                    statusMessage.textContent = "播放音频失败";
+                    console.error('[音频调试] 播放音频失败:', err);
+                    statusMessage.textContent = '播放音频失败';
                 });
             };
             setTimeout(() => {
                 if (audio.readyState < 3) {
-                    statusMessage.textContent = "音频加载中...";
+                    statusMessage.textContent = '音频加载中...';
                 }
             }, 2000);
         } catch (error) {
-            console.error("处理音频时出错:", error);
-            statusMessage.textContent = "播放音频失败";
+            console.error('[音频调试] 处理音频时出错:', error);
+            statusMessage.textContent = '播放音频失败';
         }
     };
+
     
     // Event Listeners
     voiceButton.addEventListener('click', async () => {
