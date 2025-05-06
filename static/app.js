@@ -1,170 +1,164 @@
+/**
+ * AI Human - 主应用入口文件
+ * 集成所有模块并初始化应用
+ */
+
+// 导入组件模块 - 如果使用模块加载器，可以取消下面注释并使用import语法
+/*
+import TypewriterSystem from './js/typewriter.js';
+import AudioRecorder from './js/audio-recorder.js';
+import AudioStreamingSystem from './js/audio-streaming.js';
+import MessageHandler from './js/message-handler.js';
+*/
+
+/**
+ * AI Human - 主应用入口文件
+ * 集成所有模块并初始化应用
+ */
+
+// 导入组件模块 - 如果使用模块加载器，可以取消下面注释并使用import语法
+/*
+import TypewriterSystem from './js/typewriter.js';
+import AudioRecorder from './js/audio-recorder.js';
+import AudioStreamingSystem from './js/audio-streaming.js';
+import MessageHandler from './js/message-handler.js';
+*/
+
 document.addEventListener('DOMContentLoaded', () => {
-    // DOM Elements
-    const chatMessages = document.getElementById('chat-messages');
-    const textInput = document.getElementById('text-input');
-    const voiceButton = document.getElementById('voice-button');
-    const sendButton = document.getElementById('send-button');
-    const recordingIndicator = document.getElementById('recording-indicator');
-    const statusMessage = document.getElementById('status-message');
+    // DOM元素引用
+    const elements = {
+        chatMessages: document.getElementById('chat-messages'),
+        textInput: document.getElementById('text-input'),
+        voiceButton: document.getElementById('voice-button'),
+        sendButton: document.getElementById('send-button'),
+        recordingIndicator: document.getElementById('recording-indicator'),
+        statusMessage: document.getElementById('status-message')
+    };
     
-    // 音频上下文和流式音频系统
+    // 音频上下文
     let audioContext;
-    let microphone;
-    let mediaRecorder;
-    let audioChunks = [];
-    let isRecording = false;
-    let currentAudioPlayer = null;
     
-    // 音频流式播放系统
-    const audioSystem = {
-        // 音频片段队列
-        audioQueue: [],
-        // 是否正在处理音频
-        isProcessing: false,
-        // 是否正在播放
-        isPlaying: false,
-        // 是否有新片段等待处理
-        hasNewChunks: false,
-        // 当前播放位置
-        playbackPosition: 0,
-        // 累积的音频数据
-        accumulatedSamples: null,
-        // Web Audio API 节点
-        audioNodes: {},
-        // 采样率(QWen-Omni固定输出为24000Hz)
-        sampleRate: 24000,
-        // 重置系统
-        reset() {
-            this.audioQueue = [];
-            this.isProcessing = false;
-            this.isPlaying = false;
-            this.hasNewChunks = false;
-            this.playbackPosition = 0;
-            this.accumulatedSamples = null;
-        },
-        // 初始化音频系统
-        init(context) {
-            this.audioContext = context;
-            this.audioNodes = {};
-            this.reset();
-        },
-    };
-    
-    // 初始化音频上下文（浏览器要求用户交互后初始化）
-    const initAudioContext = async () => {
+    // 动态加载模块 - 如果使用模块加载器，可以直接使用import的变量
+    let TypewriterSystem, AudioRecorder, AudioStreamingSystem, MessageHandler;
+
+    // 加载所有组件模块
+    const loadModules = async () => {
         try {
-            // 创建音频上下文
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            // 初始化流式音频系统
-            audioSystem.init(audioContext);
-            statusMessage.textContent = "音频系统已初始化";
+            // 动态引入模块 - 如果浏览器不支持ES模块，可以使用脚本标签引入 
+            TypewriterSystem = await import('./js/typewriter.js').then(m => m.default);
+            AudioRecorder = await import('./js/audio-recorder.js').then(m => m.default);
+            AudioStreamingSystem = await import('./js/audio-streaming.js').then(m => m.default);
+            MessageHandler = await import('./js/message-handler.js').then(m => m.default);
+
+            console.log('模块成功加载');
+            initializeApp(); 
         } catch (error) {
-            console.error("Error initializing audio context:", error);
-            statusMessage.textContent = "音频系统初始化失败";
+            console.error('加载模块失败:', error);
+            // 作为回退方案，可以在这里加载替代脚本
+            alert('加载模块失败，请查看控制台以获取详细信息。如果您的浏览器不支持ES模块，请考虑使用其他浏览器。');
         }
     };
+
+    // 主应用初始化函数
+    const initializeApp = () => {
+        // 创建各模块实例
+        const typewriter = TypewriterSystem;
+        const audioStreamingSystem = new AudioStreamingSystem(elements.statusMessage);
+        const audioRecorder = new AudioRecorder(elements.statusMessage);
+        const messageHandler = new MessageHandler(
+            {
+                chatMessages: elements.chatMessages,
+                statusElement: elements.statusMessage
+            },
+            typewriter,
+            audioStreamingSystem
+        );
     
-    // Start recording function
-    const startRecording = async () => {
-        try {
+        // 初始化音频上下文
+        const initAudioContext = async () => {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                audioStreamingSystem.init(audioContext);
+                elements.statusMessage.textContent = "音频系统已初始化";
+                return audioContext;
+            } catch (error) {
+                console.error("初始化音频上下文出错:", error);
+                elements.statusMessage.textContent = "音频系统初始化失败";
+                return null;
+            }
+        };
+    
+        // 事件监听器
+        elements.voiceButton.addEventListener('click', async () => {
+            // 确保音频上下文已初始化
             if (!audioContext) {
-                await initAudioContext();
+                audioContext = await initAudioContext();
+                if (!audioContext) return;
             }
             
-            // Request microphone access
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            microphone = stream;
-            
-            // Setup media recorder
-            mediaRecorder = new MediaRecorder(stream);
-            audioChunks = [];
-            
-            // Listen for data available event
-            mediaRecorder.addEventListener('dataavailable', event => {
-                audioChunks.push(event.data);
-            });
-            
-            // Start recording
-            mediaRecorder.start();
-            isRecording = true;
-            
-            // Update UI
-            voiceButton.classList.add('recording');
-            recordingIndicator.classList.add('active');
-            statusMessage.textContent = "正在录音...";
-        } catch (error) {
-            console.error("Error starting recording:", error);
-            statusMessage.textContent = "无法访问麦克风";
-        }
-    };
-    
-    // Stop recording function
-    const stopRecording = () => {
-        if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-            return;
-        }
-        
-        return new Promise(resolve => {
-            mediaRecorder.addEventListener('stop', async () => {
-                // Create audio blob from chunks
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                
-                // Convert to base64
-                const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
-                reader.onloadend = () => {
-                    const base64Audio = reader.result;
-                    resolve(base64Audio);
-                };
-                
-                // Release microphone
-                if (microphone) {
-                    microphone.getTracks().forEach(track => track.stop());
+            if (audioRecorder.getIsRecording()) {
+                // 如果正在录音，停止并发送
+                const audioData = await audioRecorder.stopRecording();
+                if (audioData) {
+                    // 更新UI
+                    elements.voiceButton.classList.remove('recording');
+                    elements.recordingIndicator.classList.remove('active');
+                    // 发送音频消息
+                    messageHandler.sendMessage('', audioData);
                 }
-            });
-            
-            // Stop recording
-            mediaRecorder.stop();
-            isRecording = false;
-            
-            // Update UI
-            voiceButton.classList.remove('recording');
-            recordingIndicator.classList.remove('active');
-            statusMessage.textContent = "录音已完成";
+            } else {
+                // 开始录音
+                const success = await audioRecorder.startRecording(audioContext);
+                if (success) {
+                    // 更新UI
+                    elements.voiceButton.classList.add('recording');
+                    elements.recordingIndicator.classList.add('active');
+                }
+            }
         });
+    
+        // 文本发送按钮事件
+        elements.sendButton.addEventListener('click', () => {
+            const text = elements.textInput.value.trim();
+            if (text) {
+                messageHandler.sendMessage(text);
+                elements.textInput.value = '';
+            }
+        });
+        
+        // 输入框回车键事件
+        elements.textInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const text = elements.textInput.value.trim();
+                if (text) {
+                    messageHandler.sendMessage(text);
+                    elements.textInput.value = '';
+                }
+            }
+        });
+        
+        // 初始化时自动初始化音频上下文
+        document.body.addEventListener('click', async () => {
+            if (!audioContext) {
+                audioContext = await initAudioContext();
+            }
+        }, { once: true });
     };
     
-    // Send message to backend
-    const sendMessage = async (text = '', audioData = null) => {
-        if (!text && !audioData) return;
-        
-        // Display user message
-        if (text) {
-            appendMessage(text, 'user');
-        } else {
-            appendMessage('🎤 [语音消息]', 'user');
-        }
-        
-        try {
-            statusMessage.textContent = "正在处理...";
-            
-            // Prepare request data
-            const requestData = {};
-            if (text) requestData.text = text;
-            if (audioData) requestData.audio = audioData;
-            
-            // Send to backend
-            const response = await fetch('/api/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestData),
-            });
-            
-            if (!response.ok) {
-                throw new Error(`Server responded with ${response.status}`);
-            }
+    // 尝试加载模块
+    loadModules();
+}); 
+
+/**
+ * 如果您的浏览器不支持ES模块，您可以使用下面的脚本标签方式引入所需模块
+ * 将下面代码添加到您的HTML文件中：
+ *
+ * <script src="./js/typewriter.js"></script>
+ * <script src="./js/audio-recorder.js"></script>
+ * <script src="./js/audio-streaming.js"></script>
+ * <script src="./js/message-handler.js"></script>
+ * <script src="./app.js"></script>
+ */
             
             // Handle SSE stream response
             const reader = response.body.getReader();
