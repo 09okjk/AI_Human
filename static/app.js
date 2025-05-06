@@ -229,10 +229,16 @@ document.addEventListener('DOMContentLoaded', () => {
                                 audioSystem.addAudioChunk(data.content);
                             } else if (data.type === 'transcript' && data.content) {
                                 console.log("Transcript:", data.content);
+                                // 每次都累加transcript内容，不只是第一次
                                 if (!aiTypingBuffer) {
-                                    aiTypingBuffer = `"${data.content}" `;
-                                    startTypewriter(messageElement);
+                                    // 第一次收到时添加引号
+                                    aiTypingBuffer = `"${data.content}`;
+                                } else {
+                                    // 后续收到的内容直接追加
+                                    aiTypingBuffer += data.content;
                                 }
+                                // 每次都执行打字机效果
+                                startTypewriter(messageElement);
                             } else if (data.type === 'error') {
                                 console.error("服务器错误:", data.content);
                                 messageElement.innerHTML = `<span class="error">服务器错误: ${data.content}</span>`;
