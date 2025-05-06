@@ -133,70 +133,78 @@ document.addEventListener('DOMContentLoaded', () => {
             const decoder = new TextDecoder();
             
             let aiResponseText = '';
+            let aiTypingBuffer = '';
             let audioBase64Chunks = [];
-            
+            let audioStreamPlaying = false;
+
             // Create message placeholder for AI response
             const messageElement = document.createElement('div');
             messageElement.className = 'message ai-message';
             messageElement.innerHTML = '<div class="typing-indicator">AI 正在回复...</div>';
             chatMessages.appendChild(messageElement);
             chatMessages.scrollTop = chatMessages.scrollHeight;
-            
+
+            // 用于打字机效果的异步函数
+            function typeWriterEffect(target, text, speed = 20) {
+                let i = 0;
+                let lastText = target.innerHTML;
+                function type() {
+                    if (i < text.length) {
+                        // 只追加新内容
+                        target.innerHTML = lastText + text.charAt(i);
+                        i++;
+                        setTimeout(type, speed);
+                    } else {
+                        lastText = target.innerHTML;
+                    }
+                }
+                type();
+            }
+
             // 使用更健壮的方式处理SSE数据
             let buffer = '';
-            
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                
-                // 解码新数据并添加到缓冲区
+
                 buffer += decoder.decode(value, { stream: true });
-                
-                // 查找完整的SSE消息
                 const lines = buffer.split('\n\n');
-                
-                // 保留最后一个可能不完整的片段
                 buffer = lines.pop() || '';
-                
+
                 for (const line of lines) {
                     if (line.startsWith('data:')) {
                         try {
-                            // 尝试解析JSON数据
                             const jsonStr = line.substring(5).trim();
                             const data = JSON.parse(jsonStr);
-                            
                             if (data.type === 'text' && data.content) {
-                                aiResponseText += data.content;
-                                messageElement.innerHTML = aiResponseText;
-                            } 
-                            else if (data.type === 'audio' && data.content) {
+                                // 实现逐字打字机效果
+                                aiTypingBuffer += data.content;
+                                typeWriterEffect(messageElement, aiTypingBuffer);
+                            } else if (data.type === 'audio' && data.content) {
                                 audioBase64Chunks.push(data.content);
-                                // 记录接收到音频数据
-                                console.log("收到音频数据片段");
-                            }
-                            else if (data.type === 'transcript' && data.content) {
-                                console.log("Transcript:", data.content);
-                                // 将转录显示在消息中
-                                if (!aiResponseText) {
-                                    aiResponseText = `"${data.content}" `;  
-                                    messageElement.innerHTML = aiResponseText;
+                                // 边收边播音频流
+                                if (!audioStreamPlaying) {
+                                    audioStreamPlaying = true;
+                                    playAudioStream(audioBase64Chunks, () => { audioStreamPlaying = false; });
                                 }
-                            }
-                            else if (data.type === 'error') {
+                            } else if (data.type === 'transcript' && data.content) {
+                                console.log("Transcript:", data.content);
+                                if (!aiTypingBuffer) {
+                                    aiTypingBuffer = `"${data.content}" `;
+                                    typeWriterEffect(messageElement, aiTypingBuffer);
+                                }
+                            } else if (data.type === 'error') {
                                 console.error("服务器错误:", data.content);
                                 messageElement.innerHTML = `<span class="error">服务器错误: ${data.content}</span>`;
                             }
                         } catch (e) {
                             console.error("解析SSE数据错误:", e);
-                            // 继续处理下一条消息，不中断流程
                         }
                     }
                 }
-                
-                // 自动滚动到底部
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
-            
+
             // Play audio response if we received any
             if (audioBase64Chunks.length > 0) {
                 playAudioResponse(audioBase64Chunks);
@@ -219,78 +227,58 @@ document.addEventListener('DOMContentLoaded', () => {
         chatMessages.scrollTop = chatMessages.scrollHeight;
     };
     
-    // Play audio response - 改进的音频播放功能
+    // Play audio response - 改进的音频播放功能（一次性播放所有片段）
     const playAudioResponse = async (base64Chunks) => {
+        playAudioStream(base64Chunks);
+    };
+
+    // 音频流式播放：每收到新片段就尝试拼接并播放
+    // callback: 播放结束后的回调
+    const playAudioStream = async (base64Chunks, callback) => {
         try {
             if (!audioContext) {
                 await initAudioContext();
             }
-            
-            // 如果当前有音频在播放，停止它
-            if (currentAudioPlayer) {
-                currentAudioPlayer.pause();
-                currentAudioPlayer = null;
-            }
-            
-            // 记录音频数据长度，用于调试
-            console.log(`收到 ${base64Chunks.length} 个音频片段`);
-            
-            if (base64Chunks.length === 0) {
-                console.warn("没有收到音频数据，无法播放");
-                statusMessage.textContent = "未收到音频数据";
-                return;
-            }
-            
-            // 合并所有音频片段并移除可能的前缀
+            // 如果当前有音频在播放，保持不变（流式拼接）
+            // 合并所有音频片段
             let fullBase64 = base64Chunks.join('');
-            
-            // 移除可能存在的 data URI 前缀
             if (fullBase64.startsWith('data:audio/wav;base64,')) {
                 fullBase64 = fullBase64.substring('data:audio/wav;base64,'.length);
             }
-            
-            // 确保 Base64 字符串的有效性
             try {
-                // 尝试解码一下看是否有效
                 atob(fullBase64.substring(0, 10));
-                console.log("Base64 格式有效");
             } catch (e) {
                 console.error("Base64 格式无效:", e);
                 statusMessage.textContent = "音频数据格式错误";
                 return;
             }
-            
-            // 创建一个 blob URL 而不是直接使用 data URI
+            // 生成 Blob 并播放
             const byteCharacters = atob(fullBase64);
             const byteNumbers = new Array(byteCharacters.length);
-            
             for (let i = 0; i < byteCharacters.length; i++) {
                 byteNumbers[i] = byteCharacters.charCodeAt(i);
             }
-            
             const byteArray = new Uint8Array(byteNumbers);
             const blob = new Blob([byteArray], { type: 'audio/wav' });
             const audioUrl = URL.createObjectURL(blob);
-            
-            // 创建音频元素并播放
+            // 如果当前有音频在播放，暂停并替换
+            if (currentAudioPlayer) {
+                currentAudioPlayer.pause();
+                currentAudioPlayer = null;
+            }
             const audio = new Audio(audioUrl);
             currentAudioPlayer = audio;
-            
-            // 监听错误
             audio.onerror = (e) => {
                 console.error("音频播放错误:", e);
                 statusMessage.textContent = "播放音频失败";
-                URL.revokeObjectURL(audioUrl); // 释放URL
+                URL.revokeObjectURL(audioUrl);
             };
-            
-            // 播放结束时的处理
             audio.onended = () => {
                 currentAudioPlayer = null;
                 statusMessage.textContent = "就绪";
-                URL.revokeObjectURL(audioUrl); // 释放URL
+                URL.revokeObjectURL(audioUrl);
+                if (callback) callback();
             };
-            
-            // 加载完成后播放
             audio.oncanplaythrough = () => {
                 statusMessage.textContent = "正在播放回复...";
                 audio.play().catch(err => {
@@ -298,15 +286,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     statusMessage.textContent = "播放音频失败";
                 });
             };
-            
-            // 设置超时，如果加载时间过长，给出提示
             setTimeout(() => {
-                if (audio.readyState < 3) { // HAVE_FUTURE_DATA = 3
-                    console.warn("音频加载时间过长");
+                if (audio.readyState < 3) {
                     statusMessage.textContent = "音频加载中...";
                 }
             }, 2000);
-            
         } catch (error) {
             console.error("处理音频时出错:", error);
             statusMessage.textContent = "播放音频失败";
