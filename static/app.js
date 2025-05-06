@@ -183,19 +183,25 @@ document.addEventListener('DOMContentLoaded', () => {
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
             // 用于打字机效果的异步函数
-            function typeWriterEffect(target, text, speed = 20) {
-                // 只追加新内容（支持多次追加）
-                let prev = target.innerHTML;
-                let start = prev.length;
-                let i = start;
-                function type() {
-                    if (i < text.length) {
-                        target.innerHTML = text.slice(0, i + 1);
-                        i++;
-                        setTimeout(type, speed);
+            // 全局唯一typewriter动画
+            let typewriterTarget = null;
+            let typewriterInterval = null;
+            let typewriterIndex = 0;
+
+            function startTypewriter(target, speed = 20) {
+                typewriterTarget = target;
+                if (typewriterInterval) return; // 已有动画在跑，直接等它补全
+                typewriterIndex = target.innerHTML.length;
+                typewriterInterval = setInterval(() => {
+                    if (typewriterIndex < aiTypingBuffer.length) {
+                        typewriterTarget.innerHTML += aiTypingBuffer.charAt(typewriterIndex);
+                        typewriterIndex++;
+                    } else {
+                        // 已补全到当前目标，等待新片段
+                        clearInterval(typewriterInterval);
+                        typewriterInterval = null;
                     }
-                }
-                type();
+                }, speed);
             }
 
             // 使用更健壮的方式处理SSE数据
@@ -216,7 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (data.type === 'text' && data.content) {
                                 // 实现逐字打字机效果
                                 aiTypingBuffer += data.content;
-                                typeWriterEffect(messageElement, aiTypingBuffer);
+                                startTypewriter(messageElement);
                             } else if (data.type === 'audio' && data.content) {
                                 audioBase64Chunks.push(data.content);
                                 // 将新的音频片段添加到队列
@@ -246,6 +252,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // SSE流结束后，强制刷新最终文本，防止卡在“AI正在回复...”
             if (aiTypingBuffer) {
+                // 结束动画，强制刷新最终文本
+                if (typewriterInterval) {
+                    clearInterval(typewriterInterval);
+                    typewriterInterval = null;
+                }
                 messageElement.innerHTML = aiTypingBuffer;
                 console.log('[调试] 最终AI回复内容：', aiTypingBuffer);
             }
