@@ -3,16 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 语音对话</title>
+    <title>AI语音对话</title>
     <link rel="stylesheet" href="/static/styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="voice_chat.css">
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .instructions {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #e8f4f8;
+            border-left: 4px solid #17a2b8;
+            border-radius: 4px;
+        }
+        .feature-list {
+            margin-bottom: 20px;
+        }
+        .feature-list li {
+            margin-bottom: 10px;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
         <header>
             <h1><i class="fas fa-robot"></i> AI 语音对话</h1>
         </header>
+        
+        <div class="instructions">
+            <h2>使用说明</h2>
+            <p>这是一个支持实时语音对话的AI系统。点击右下角的"开始通话"按钮开始一段新的对话。</p>
+        </div>
         
         <div class="chat-container">
             <div class="chat-messages" id="chat-messages">
@@ -27,7 +66,7 @@
                     <input type="text" id="text-input" placeholder="输入文字消息..." />
                 </div>
                 <div class="voice-controls">
-                    <button id="voice-button" class="voice-button">
+                    <button id="voice-button" class="voice-button" title="Start voice input">
                         <i class="fas fa-microphone"></i>
                     </button>
                     <div id="recording-indicator" class="recording-indicator">
@@ -36,10 +75,29 @@
                         <div class="recording-wave"></div>
                     </div>
                 </div>
-                <button id="send-button" class="send-button">
+                <button id="send-button" class="send-button" title="Send message">
                     <i class="fas fa-paper-plane"></i>
                 </button>
             </div>
+        </div>
+        
+        <div class="feature-list">
+            <h3>功能特点：</h3>
+            <ul>
+                <li><strong>实时语音对话</strong> - 实时检测语音，自动识别用户说话状态</li>
+                <li><strong>自动转写</strong> - 自动将语音转为文本</li>
+                <li><strong>智能打断</strong> - 当你开始说话时，可以自动打断AI的回复</li>
+                <li><strong>流畅交互</strong> - 支持多轮对话，就像与真人交谈一样</li>
+            </ul>
+        </div>
+        
+        <div class="usage-tips">
+            <h3>使用技巧：</h3>
+            <ul>
+                <li>停顿2秒左右会被认为是语音输入结束</li>
+                <li>开始说话时可以打断AI回复</li>
+                <li>完成对话后请点击"结束通话"按钮</li>
+            </ul>
         </div>
         
         <div class="status-bar">
@@ -48,5 +106,6 @@
     </div>
 
     <script src="/static/app.js"></script>
+    <script src="voice_chat.js"></script>
 </body>
 </html>
