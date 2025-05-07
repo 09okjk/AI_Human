@@ -1,5 +1,7 @@
 import os
-from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
+import time
+import uuid
+from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory, url_for
 from flask_cors import CORS
 import openai
 import base64
@@ -7,6 +9,7 @@ import json
 import numpy as np
 from dotenv import load_dotenv
 import ssl
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +21,10 @@ CORS(app)
 cert_path = os.path.join(os.path.dirname(__file__), 'cert.pem')
 key_path = os.path.join(os.path.dirname(__file__), 'key.pem')
 
+# 创建音频上传目录
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads', 'audio')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 # Configure OpenAI client for v0.28.0
 openai.api_key = os.getenv("DASHSCOPE_API_KEY") or "sk-xxx"  # Replace with your API key if not using env var
 openai.api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -25,6 +32,11 @@ openai.api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
+
+@app.route('/uploads/audio/<filename>')
+def serve_audio(filename):
+    """提供上传的音频文件访问"""
+    return send_from_directory(UPLOAD_FOLDER, filename)
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -43,40 +55,78 @@ def chat():
         # 处理多模态输入（文本和音频）
         # 根据官方文档，音频需要特定的格式
         
-        if text_input and audio_data:
-            # 处理文本+音频的情况
-            # 从 base64 数据中提取真正的编码部分
-            if audio_data.startswith('data:audio/wav;base64,'):
-                audio_data = audio_data[len('data:audio/wav;base64,'):]
+        # 处理音频数据（如果有）
+        audio_url = None
+        if audio_data:
+            try:
+                # 从 base64 数据中提取真正的编码部分
+                if audio_data.startswith('data:audio/wav;base64,'):
+                    audio_data = audio_data[len('data:audio/wav;base64,'):]
                 
-            # 将消息构建为一个指定格式的数组
+                # 解码base64数据
+                audio_binary = base64.b64decode(audio_data)
+                
+                # 生成唯一文件名
+                filename = f"{uuid.uuid4()}.wav"
+                file_path = os.path.join(UPLOAD_FOLDER, filename)
+                
+                # 写入文件
+                with open(file_path, 'wb') as f:
+                    f.write(audio_binary)
+                
+                # 生成音频文件URL - 使用完整的URL包含主机名
+                server_name = request.headers.get('Host', '192.168.18.197:8443')
+                protocol = 'https'
+                audio_url = f"{protocol}://{server_name}/uploads/audio/{filename}"
+                
+                print(f"\n已保存音频文件: {file_path}")
+                print(f"\n音频URL: {audio_url}")
+                
+            except Exception as e:
+                print(f"\n处理音频数据时出错: {e}")
+        
+        # 准备内容数组
+        content_array = []
+        
+        # 添加文本和音频内容
+        if text_input and audio_url:
+            # 文本+音频
             content_array = [
                 {
-                    "type": "text", 
-                    "text": text_input
-                }
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": audio_url,
+                        "format": "wav"
+                    }
+                },
+                {"type": "text", "text": text_input}
             ]
+            messages.append({"role": "user", "content": content_array})
+            print(f"\n发送文本+音频消息: {text_input} + {audio_url}")
             
-            # 在结构中添加音频内容
-            messages.append({
-                "role": "user", 
-                "content": content_array
-            })
-            
-            # 增加说明性的消息
-            print(f"\n发送纯文本消息，音频已跳过: {text_input}")
         elif text_input:
             # 只有文本
             messages.append({"role": "user", "content": text_input})
-        elif audio_data:
-            # 只有音频，添加一个默认文本提示
-            messages.append({
-                "role": "user",
-                "content": "请回复我的语音消息"
-            })
+            print(f"\n发送纯文本消息: {text_input}")
             
-            # 注：我们暂时不使用音频输入格式，因为可能有格式问题
-            print(f"\n跳过音频处理，发送文本提示而非音频数据")  
+        elif audio_url:
+            # 只有音频
+            content_array = [
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": audio_url,
+                        "format": "wav"
+                    }
+                }
+            ]
+            messages.append({"role": "user", "content": content_array})
+            print(f"\n发送纯音频消息: {audio_url}")
+            
+        else:
+            # 无效输入情况
+            messages.append({"role": "user", "content": "请提供文字或语音输入"})
+            print("\n没有有效输入内容")  
         
         def generate():
             try:
