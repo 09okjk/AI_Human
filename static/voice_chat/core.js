@@ -20,11 +20,21 @@ class VoiceChat {
         this.consecutiveSpeakingFrames = 0; // 连续说话帧数
         this.consecutiveSilentFrames = 0;   // 连续静音帧数
         
+        // 流式回复处理相关
+        this.currentMessageElement = null; // 当前消息元素
+        this.textBuffer = ''; // 文本缓冲区
+        this.audioChunks = []; // 音频块缓存
+        this.typewriterActive = false; // 打字机效果是否激活
+        this.firstResponseReceived = false; // 是否收到第一个响应
+        
         // 引用录音对话功能实例
         this.audioRecorder = null;     // 录音对话功能的实例引用
 
         // 初始化
         console.log("语音通话核心模块已初始化");
+        
+        // 绑定事件处理方法
+        this.handleStreamResponse = this.handleStreamResponse.bind(this);
     }
     
     /**
@@ -253,6 +263,9 @@ class VoiceChat {
                 this.isSpeaking = true;
                 this.updateStatus('正在说话...');
                 
+                // 显示录音波形
+                this.updateVoiceIndicator(true, audioLevel);
+                
                 // 清除可能已经设置的静音定时器
                 if (this.silenceTimer) {
                     clearTimeout(this.silenceTimer);
@@ -275,6 +288,9 @@ class VoiceChat {
                             this.isSpeaking = false;
                             this.updateStatus('检测到您已说话结束，正在处理...');
                             
+                            // 更新录音波形显示
+                            this.updateVoiceIndicator(false);
+                            
                             // 自动停止录音并处理
                             this.autoStopAndSendRecording();
                         }
@@ -284,9 +300,37 @@ class VoiceChat {
             }
         }
         
-        // 可以在这里添加UI反馈，如显示声波等
-        if (typeof this.updateVoiceIndicator === 'function') {
-            this.updateVoiceIndicator(audioLevel);
+        // 持续更新录音指示器
+        if (this.isSpeaking) {
+            this.updateVoiceIndicator(true, audioLevel);
+        }
+    }
+    
+    /**
+     * 更新声音波形指示器
+     * @param {boolean} active - 是否显示活跃状态
+     * @param {number} level - 音量级别 (0-1)
+     */
+    updateVoiceIndicator(active, level = 0) {
+        const indicator = document.getElementById('recording-indicator');
+        if (!indicator) return;
+        
+        if (active) {
+            indicator.classList.add('active');
+            
+            // 创建或更新波形
+            const waves = indicator.querySelectorAll('.recording-wave');
+            if (waves && waves.length > 0) {
+                // 根据音量调整波形高度
+                const height = 6 + Math.round(level * 20);
+                for (let i = 0; i < waves.length; i++) {
+                    // 错开波形高度，创造波浪效果
+                    const waveHeight = height * (0.7 + 0.3 * Math.sin(Date.now() / 200 + i));
+                    waves[i].style.height = `${waveHeight}px`;
+                }
+            }
+        } else {
+            indicator.classList.remove('active');
         }
     }
     
@@ -307,12 +351,34 @@ class VoiceChat {
                 this.waitingForAiResponse = true;
                 this.updateStatus("正在处理您的语音...");
                 
+                // 添加用户消息到聊天界面
+                this.addMessage('您', '[语音输入]', 'user');
+                
                 try {
                     // 处理并发送音频
-                    const response = await this.audioRecorder.processAudioAndSend(audioBlob, this.sessionId);
+                    const response = await fetch('/api/voice-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            audio: audioBlob,
+                            session_id: this.sessionId
+                        })
+                    });
                     
-                    // 注册第一个响应块的回调，以便在收到响应时启动新录音
-                    this.handleResponse(response);
+                    // 处理流式响应
+                    await this.handleStreamResponse(response);
+                    
+                    // 处理完成后，如果通话仍然活跃，开始新的录音
+                    if (this.isCallActive) {
+                        setTimeout(() => {
+                            if (this.isCallActive) {
+                                this.startNewRecording();
+                            }
+                        }, 800);
+                    }
+                    
                 } catch (error) {
                     console.error("处理录音失败:", error);
                     this.updateStatus("处理失败，正在重新启动录音");
@@ -339,6 +405,236 @@ class VoiceChat {
                     this.startNewRecording();
                 }
             }, 1000);
+        }
+    }
+    
+    /**
+     * 处理流式响应
+     * @param {Response} response - Fetch API的响应对象
+     */
+    async handleStreamResponse(response) {
+        if (!response.ok) {
+            throw new Error(`服务器错误: ${response.status}`);
+        }
+        
+        // 创建消息元素
+        if (!this.currentMessageElement) {
+            this.currentMessageElement = this.createMessageElement('AI', '', 'ai');
+            // 添加打字机效果容器
+            this.typewriterContainer = document.createElement('div');
+            this.typewriterContainer.className = 'typewriter-text';
+            this.currentMessageElement.appendChild(this.typewriterContainer);
+        }
+        
+        // 重置状态
+        this.textBuffer = '';
+        this.audioChunks = [];
+        this.typewriterActive = false;
+        this.firstResponseReceived = false;
+        
+        // 读取流
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const jsonStr = line.substring(5).trim();
+                        const data = JSON.parse(jsonStr);
+                        
+                        // 根据数据类型处理
+                        if (data.type === 'text' && data.content) {
+                            // 文本响应
+                            if (!this.firstResponseReceived) {
+                                this.firstResponseReceived = true;
+                                this.waitingForAiResponse = false;
+                            }
+                            
+                            this.textBuffer += data.content;
+                            this.updateTypewriterEffect(this.textBuffer);
+                        } 
+                        else if (data.type === 'audio' && data.content) {
+                            // 音频响应
+                            if (!this.firstResponseReceived) {
+                                this.firstResponseReceived = true;
+                                this.waitingForAiResponse = false;
+                            }
+                            
+                            // 播放音频
+                            this.playAudioChunk(data.content);
+                        }
+                        else if (data.type === 'transcript' && data.content) {
+                            // 转录内容
+                            console.log("转录:", data.content);
+                            if (!this.textBuffer.startsWith('"')) {
+                                this.textBuffer = `"${data.content}`;
+                            } else {
+                                // 追加转录内容
+                                this.textBuffer += data.content;
+                            }
+                            this.updateTypewriterEffect(this.textBuffer);
+                        }
+                        else if (data.type === 'error') {
+                            // 错误处理
+                            console.error("服务器错误:", data.content);
+                            this.updateStatus(`错误: ${data.content}`);
+                            if (this.currentMessageElement) {
+                                const errorSpan = document.createElement('span');
+                                errorSpan.className = 'error-text';
+                                errorSpan.textContent = `错误: ${data.content}`;
+                                this.currentMessageElement.appendChild(errorSpan);
+                            }
+                        }
+                    } catch (e) {
+                        console.error("解析SSE数据错误:", e, line);
+                    }
+                }
+            }
+        }
+        
+        // 流结束处理
+        if (this.textBuffer) {
+            // 如果是转录消息，添加右引号
+            if (this.textBuffer.startsWith('"') && !this.textBuffer.endsWith('"')) {
+                this.textBuffer += '"';
+                this.updateTypewriterEffect(this.textBuffer, true);
+            }
+            
+            // 完成打字效果
+            this.completeTypewriterEffect();
+        }
+        
+        // 重置当前消息元素
+        setTimeout(() => {
+            this.currentMessageElement = null;
+        }, 500);
+        
+        // 返回处理完成的文本
+        return this.textBuffer;
+    }
+    
+    /**
+     * 更新打字机效果显示
+     * @param {string} text - 显示的文本
+     * @param {boolean} isComplete - 是否为最终文本
+     */
+    updateTypewriterEffect(text, isComplete = false) {
+        if (!this.typewriterContainer) return;
+        
+        // 直接更新文本
+        this.typewriterContainer.textContent = text;
+        
+        // 滚动到最新消息
+        this.scrollToLatestMessage();
+    }
+    
+    /**
+     * 完成打字机效果
+     */
+    completeTypewriterEffect() {
+        if (this.typewriterContainer && this.textBuffer) {
+            this.typewriterContainer.textContent = this.textBuffer;
+            this.scrollToLatestMessage();
+        }
+    }
+    
+    /**
+     * 滚动到最新消息
+     */
+    scrollToLatestMessage() {
+        const chatContainer = document.getElementById('chat-messages');
+        if (chatContainer) {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+    }
+    
+    /**
+     * 创建消息元素并添加到聊天容器
+     * @param {string} sender - 发送者
+     * @param {string} content - 消息内容 
+     * @param {string} type - 消息类型
+     * @returns {HTMLElement} 创建的消息元素
+     */
+    createMessageElement(sender, content, type) {
+        const chatContainer = document.getElementById('chat-messages');
+        if (!chatContainer) return null;
+        
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${type}-message`;
+        
+        if (type === 'system') {
+            // 系统消息格式
+            messageDiv.textContent = content;
+        } else {
+            // 用户/AI消息格式
+            const nameSpan = document.createElement('div');
+            nameSpan.className = 'message-sender';
+            nameSpan.textContent = sender;
+            
+            messageDiv.appendChild(nameSpan);
+            
+            if (content) {
+                const contentSpan = document.createElement('div');
+                contentSpan.className = 'message-content';
+                contentSpan.textContent = content;
+                messageDiv.appendChild(contentSpan);
+            }
+        }
+        
+        chatContainer.appendChild(messageDiv);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        return messageDiv;
+    }
+    
+    /**
+     * 播放音频块
+     * @param {string} base64Audio - Base64编码的音频数据
+     */
+    playAudioChunk(base64Audio) {
+        try {
+            // 清理base64前缀
+            const cleanBase64 = base64Audio.replace(/^data:audio\/[^;]+;base64,/, '');
+            
+            // 解码base64
+            const binaryString = atob(cleanBase64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            
+            // 创建Blob和临时URL
+            const blob = new Blob([bytes], { type: 'audio/wav' });
+            const audioUrl = URL.createObjectURL(blob);
+            
+            // 创建并播放音频
+            const audio = new Audio(audioUrl);
+            audio.onended = () => URL.revokeObjectURL(audioUrl);
+            
+            // 尝试播放
+            audio.play().catch(err => {
+                console.error('播放音频失败:', err);
+                
+                // 如果是自动播放策略导致的错误，尝试静音播放
+                if (err.name === 'NotAllowedError') {
+                    audio.muted = true;
+                    audio.play().then(() => {
+                        audio.muted = false;
+                        audio.play().catch(e => console.error('第二次播放失败:', e));
+                    }).catch(e => console.error('静音播放失败:', e));
+                }
+            });
+            
+        } catch (error) {
+            console.error('处理音频数据失败:', error);
         }
     }
     
@@ -422,9 +718,12 @@ class VoiceChat {
      */
     addMessage(sender, content, type) {
         // 防止添加空消息或占位消息
-        if (!content || content === "请说些什么，我在听。" || content === "[语音输入]") {
+        if (!content || content === "请说些什么，我在听。" || content === "[语音输入]" && type !== 'user') {
             return;
         }
+        
+        // 创建消息元素
+        this.createMessageElement(sender, content, type);
         
         // 使用事件通知UI更新
         const event = new CustomEvent('voice-chat-message', {
