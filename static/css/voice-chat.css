@@ -1,0 +1,309 @@
+/* 语音通话界面样式 */
+.voice-call-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px;
+    background-color: rgba(0, 0, 0, 0.7);
+    border-radius: 10px;
+    z-index: 1000;
+}
+
+.status-indicator {
+    color: white;
+    font-size: 14px;
+    margin-bottom: 10px;
+    padding: 5px 10px;
+    border-radius: 15px;
+    background-color: #444;
+}
+
+.status-indicator.active {
+    background-color: #28a745;
+}
+
+.status-indicator.speaking {
+    background-color: #007bff;
+    animation: pulse 1s infinite;
+}
+
+.status-indicator.ai-speaking {
+    background-color: #17a2b8;
+    animation: pulse 1.5s infinite;
+}
+
+.status-indicator.error {
+    background-color: #dc3545;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 0.6;
+    }
+    50% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0.6;
+    }
+}
+
+/* 通话控制按钮 */
+.call-controls {
+    display: flex;
+    justify-content: center;
+    margin: 15px 0;
+    gap: 10px;
+}
+
+.call-button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 20px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.call-button i {
+    font-size: 16px;
+}
+
+.start-call {
+    background-color: #4caf50;
+    color: white;
+}
+
+.start-call:hover {
+    background-color: #3d8b40;
+}
+
+.end-call {
+    background-color: #f44336;
+    color: white;
+}
+
+.end-call:hover {
+    background-color: #d32f2f;
+}
+
+.call-button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.chat-box {
+    position: fixed;
+    bottom: 100px;
+    right: 20px;
+    width: 300px;
+    max-height: 60vh;
+    overflow-y: auto;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+    padding: 10px;
+    z-index: 999;
+}
+
+.message {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    position: relative;
+}
+
+.message-name {
+    font-weight: bold;
+    margin-right: 5px;
+    font-size: 12px;
+}
+
+.message-content {
+    display: block;
+    margin-top: 3px;
+    word-break: break-word;
+}
+
+.user-message {
+    background-color: #e3f2fd;
+    text-align: right;
+}
+
+.ai-message {
+    background-color: #f1f8e9;
+}
+
+.system-message {
+    background-color: #f1f1f1 !important;
+    color: #666;
+    text-align: center;
+    font-style: italic;
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-radius: 8px;
+    font-size: 0.9em;
+}
+
+.error-message {
+    background-color: #ffebee;
+    color: #d32f2f;
+    text-align: center;
+}
+
+/* 录音指示器增强 */
+.recording-indicator {
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 20px;
+}
+
+.recording-indicator.active {
+    display: flex;
+}
+
+.recording-wave {
+    background-color: #f44336;
+    width: 4px;
+    height: 10px;
+    border-radius: 2px;
+    margin: 0 2px;
+    animation: recording-wave 1.2s infinite ease-in-out;
+}
+
+.recording-wave:nth-child(1) {
+    animation-delay: 0s;
+}
+
+.recording-wave:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.recording-wave:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes recording-wave {
+    0%, 100% {
+        height: 6px;
+    }
+    50% {
+        height: 16px;
+    }
+}
+
+/* 录音中的麦克风按钮状态 */
+.voice-button.recording {
+    background-color: #f44336;
+    animation: pulse-recording 1.5s infinite;
+}
+
+@keyframes pulse-recording {
+    0% {
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(244, 67, 54, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0);
+    }
+}
+
+/* 状态指示器 */
+.status-bar {
+    background-color: #f8f9fa;
+    padding: 8px;
+    border-radius: 4px;
+    text-align: center;
+    margin-top: 10px;
+    font-size: 14px;
+    color: #495057;
+    border: 1px solid #e9ecef;
+}
+
+.recording .status-message {
+    animation: pulse 1s infinite;
+    color: #f44336;
+}
+
+/* 聊天容器样式 */
+.chat-container {
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 400px;
+}
+
+.chat-messages {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 15px;
+    background-color: #f9f9f9;
+}
+
+.chat-input {
+    display: flex;
+    border-top: 1px solid #e9ecef;
+    padding: 10px;
+    background-color: #fff;
+}
+
+.text-input {
+    flex-grow: 1;
+    margin-right: 10px;
+}
+
+.text-input input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 20px;
+    outline: none;
+}
+
+.voice-controls {
+    position: relative;
+    margin-right: 10px;
+}
+
+.voice-button, .send-button {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    background-color: #6c757d;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.voice-button:hover, .send-button:hover {
+    background-color: #5a6268;
+}
+
+.send-button {
+    background-color: #007bff;
+}
+
+.send-button:hover {
+    background-color: #0069d9;
+}
