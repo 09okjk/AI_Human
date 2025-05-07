@@ -58,9 +58,9 @@ class VoiceChat {
             
             this.updateStatus('开始通话中...');
             
-            // 1. 创建服务器会话
+            // 1. 创建服务器会话 - 修改为正确的API端点
             console.log("正在创建服务器会话...");
-            const response = await fetch('/api/voice-chat/session', {
+            const response = await fetch('/api/call/start', {
                 method: 'POST'
             });
             
@@ -261,8 +261,11 @@ class VoiceChat {
      */
     async endServerSession() {
         try {
-            await fetch(`/api/voice-chat/session/${this.sessionId}`, {
-                method: 'DELETE'
+            // 修改为正确的API端点和请求格式
+            await fetch('/api/call/end', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ session_id: this.sessionId })
             });
             console.log("会话已在服务器结束");
         } catch (error) {
