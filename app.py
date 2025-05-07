@@ -40,27 +40,63 @@ def chat():
         # For v0.28.0 API structure
         messages = []  # Will prepare messages based on input
         
-        # For v0.28.0, we need to handle multimodal content differently
-        # Since v0.28.0 doesn't natively support multimodal inputs like audio,
-        # we'll need to adapt our approach
+        # 处理多模态输入（文本和音频）
+        # 根据官方文档，音频需要特定的格式
         
-        if text_input:
-            # If we have text, use it as the message content
+        if text_input and audio_data:
+            # 处理文本+音频的情况
+            # 从 base64 数据中提取真正的编码部分
+            if audio_data.startswith('data:audio/wav;base64,'):
+                audio_data = audio_data[len('data:audio/wav;base64,'):]
+                
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": audio_data,
+                            "format": "wav"
+                        }
+                    },
+                    {"type": "text", "text": text_input}
+                ]
+            })
+        elif text_input:
+            # 只有文本
             messages.append({"role": "user", "content": text_input})
         elif audio_data:
-            # For audio, we'll include a placeholder message and send audio separately
-            messages.append({"role": "user", "content": "[Audio Input]"})  
+            # 只有音频
+            # 从 base64 数据中提取真正的编码部分
+            if audio_data.startswith('data:audio/wav;base64,'):
+                audio_data = audio_data[len('data:audio/wav;base64,'):]
+                
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": audio_data,
+                            "format": "wav"
+                        }
+                    }
+                ]
+            })  
         
         def generate():
             try:
-                # Using v0.28.0 API structure
+                # 使用 v0.28.0 API 结构与 Qwen-Omni 特定参数
+                print("\n发送到API的消息结构:", json.dumps(messages, ensure_ascii=False))
                 response = openai.ChatCompletion.create(
                     model="qwen-omni-turbo-0119",
                     messages=messages,
                     stream=True,
-                    # Additional parameters specific to Qwen API
+                    # 配置 Qwen API 特定参数
                     modalities=["text", "audio"],
-                    audio={"voice": "Cherry", "format": "wav"}
+                    audio={"voice": "Cherry", "format": "wav"},
+                    # 添加流选项以包含 usage 信息
+                    stream_options={"include_usage": True}
                 )
                 
                 for chunk in response:
