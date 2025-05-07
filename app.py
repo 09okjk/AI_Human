@@ -61,12 +61,22 @@ def chat():
             try:
                 # 从 base64 数据中提取编码部分
                 if audio_data.startswith('data:audio/wav;base64,'):
-                    clean_audio_data = audio_data[len('data:audio/wav;base64,'):]
+                    # 提取原始base64数据
+                    raw_base64 = audio_data[len('data:audio/wav;base64,'):]
+                    # 按官方格式添加前缀 - 注意这里使用"data:;base64,"而非"data:audio/wav;base64,"
+                    clean_audio_data = f"data:;base64,{raw_base64}"
                 else:
-                    clean_audio_data = audio_data
+                    # 如果没有前缀，直接添加官方前缀
+                    clean_audio_data = f"data:;base64,{audio_data}"
                     
-                # 保存音频文件（便于调试）
-                audio_binary = base64.b64decode(clean_audio_data)
+                # 提取并保存音频文件（便于调试）
+                # 从带前缀的数据中提取原始base64
+                if clean_audio_data.startswith('data:;base64,'):
+                    raw_base64 = clean_audio_data[len('data:;base64,'):]
+                else:
+                    raw_base64 = clean_audio_data
+                    
+                audio_binary = base64.b64decode(raw_base64)
                 filename = f"{uuid.uuid4()}.wav"
                 file_path = os.path.join(UPLOAD_FOLDER, filename)
                 
@@ -86,7 +96,7 @@ def chat():
                 {
                     "type": "input_audio",
                     "input_audio": {
-                        "data": clean_audio_data,  # 直接发送Base64数据而不是URL
+                        "data": clean_audio_data,  # 按官方格式发送Base64数据
                         "format": "wav"
                     }
                 },
@@ -106,7 +116,7 @@ def chat():
                 {
                     "type": "input_audio",
                     "input_audio": {
-                        "data": clean_audio_data,  # 直接发送Base64数据而不是URL
+                        "data": clean_audio_data,  # 按官方格式发送Base64数据
                         "format": "wav"
                     }
                 }
