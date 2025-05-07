@@ -9,6 +9,7 @@ class VoiceChat {
         this.isRecording = false;      // 是否正在录音
         this.isAiSpeaking = false;     // AI是否正在说话
         this.sessionId = null;         // 会话ID
+        this.waitingForAiResponse = false; // 是否等待AI响应
         
         // 音频相关
         this.audioContext = null;      // 音频上下文
@@ -150,6 +151,124 @@ class VoiceChat {
             this.responseAbortController = null;
         }
         this.isAiSpeaking = false;
+    }
+    
+    /**
+     * 暂停录音 - 在检测到用户说话结束时调用
+     */
+    pauseRecording() {
+        if (!this.isRecording || !this.mediaRecorder) return;
+        
+        console.log("暂停录音");
+        this.isRecording = false;
+        this.waitingForAiResponse = true;
+        this.mediaRecorder.stop();
+        
+        // 停止VAD检测
+        if (this.vadAnimationFrame) {
+            cancelAnimationFrame(this.vadAnimationFrame);
+            this.vadAnimationFrame = null;
+        }
+        
+        this.updateStatus('正在等待AI响应...');
+    }
+    
+    /**
+     * 恢复录音 - 在收到AI第一条响应后调用
+     */
+    resumeRecording() {
+        if (this.isRecording || !this.isCallActive || !this.mediaStream) return;
+        
+        console.log("恢复录音");
+        this.waitingForAiResponse = false;
+        this.startRecording();
+        this.startVoiceDetection();
+        this.updateStatus('可以继续对话');
+    }
+    
+    /**
+     * 处理用户语音结束事件
+     * 当检测到用户说话结束时调用
+     */
+    handleUserSpeechEnd(audioBlob) {
+        // 暂停录音，等待AI响应
+        this.pauseRecording();
+        
+        // 发送音频到服务器
+        this.sendAudioToServer(audioBlob)
+            .then(response => {
+                // 处理从服务器返回的响应
+                this.handleServerResponse(response);
+            })
+            .catch(error => {
+                console.error("发送音频失败:", error);
+                this.updateStatus("发送失败，请重试");
+                // 恢复录音，允许用户重试
+                this.resumeRecording();
+            });
+    }
+    
+    /**
+     * 处理服务器响应
+     */
+    handleServerResponse(response) {
+        // 服务器收到第一条响应后恢复录音
+        const onFirstChunk = () => {
+            if (this.waitingForAiResponse) {
+                this.resumeRecording();
+            }
+        };
+        
+        // 开始播放AI回复
+        this.playAiResponse(response, onFirstChunk);
+    }
+    
+    /**
+     * 添加消息到聊天界面
+     * @param {string} sender 发送者
+     * @param {string} content 内容
+     * @param {string} type 消息类型 ('user'|'ai'|'system')
+     */
+    addMessage(sender, content, type) {
+        // 防止添加空消息或占位消息
+        if (!content || content === "请说些什么，我在听。" || content === "[语音输入]") {
+            return;
+        }
+        
+        // 这里调用UI更新方法，具体实现需要根据项目UI组件修改
+        // 使用事件或直接调用UI组件方法
+        console.log(`添加消息: ${sender} (${type}): ${content}`);
+        
+        // 假设有一个消息显示函数
+        if (typeof this.displayMessageInUI === 'function') {
+            this.displayMessageInUI(sender, content, type);
+        }
+        
+        // 也可以使用事件方式
+        const event = new CustomEvent('voice-chat-message', {
+            detail: { sender, content, type }
+        });
+        document.dispatchEvent(event);
+    }
+    
+    /**
+     * 更新状态显示
+     */
+    updateStatus(message) {
+        console.log(`状态更新: ${message}`);
+        // 这里只更新状态文本，不添加为消息
+        // 避免状态消息被错误地显示为对话内容
+        
+        // 假设有一个状态更新函数
+        if (typeof this.updateStatusDisplay === 'function') {
+            this.updateStatusDisplay(message);
+        }
+        
+        // 也可以使用事件方式
+        const event = new CustomEvent('voice-chat-status', {
+            detail: { message }
+        });
+        document.dispatchEvent(event);
     }
 }
 
