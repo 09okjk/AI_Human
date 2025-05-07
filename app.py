@@ -56,72 +56,63 @@ def chat():
         # 根据官方文档，音频需要特定的格式
         
         # 处理音频数据（如果有）
-        audio_url = None
+        clean_audio_data = None
         if audio_data:
             try:
-                # 从 base64 数据中提取真正的编码部分
+                # 从 base64 数据中提取编码部分
                 if audio_data.startswith('data:audio/wav;base64,'):
-                    audio_data = audio_data[len('data:audio/wav;base64,'):]
-                
-                # 解码base64数据
-                audio_binary = base64.b64decode(audio_data)
-                
-                # 生成唯一文件名
+                    clean_audio_data = audio_data[len('data:audio/wav;base64,'):]
+                else:
+                    clean_audio_data = audio_data
+                    
+                # 保存音频文件（便于调试）
+                audio_binary = base64.b64decode(clean_audio_data)
                 filename = f"{uuid.uuid4()}.wav"
                 file_path = os.path.join(UPLOAD_FOLDER, filename)
                 
-                # 写入文件
                 with open(file_path, 'wb') as f:
                     f.write(audio_binary)
                 
-                # 生成音频文件URL - 使用完整的URL包含主机名
-                server_name = request.headers.get('Host', '192.168.18.197:8443')
-                protocol = 'https'
-                audio_url = f"{protocol}://{server_name}/uploads/audio/{filename}"
-                
-                print(f"\n已保存音频文件: {file_path}")
-                print(f"\n音频URL: {audio_url}")
+                print(f"\n已保存音频文件到: {file_path} (仅用于调试)")
                 
             except Exception as e:
                 print(f"\n处理音频数据时出错: {e}")
+                clean_audio_data = None
         
-        # 准备内容数组
-        content_array = []
-        
-        # 添加文本和音频内容
-        if text_input and audio_url:
-            # 文本+音频
+        # 准备内容
+        if text_input and clean_audio_data:
+            # 文本+音频混合输入
             content_array = [
                 {
                     "type": "input_audio",
                     "input_audio": {
-                        "data": audio_url,
+                        "data": clean_audio_data,  # 直接发送Base64数据而不是URL
                         "format": "wav"
                     }
                 },
                 {"type": "text", "text": text_input}
             ]
             messages.append({"role": "user", "content": content_array})
-            print(f"\n发送文本+音频消息: {text_input} + {audio_url}")
+            print(f"\n发送文本+音频消息: {text_input} + [音频数据]")
             
         elif text_input:
             # 只有文本
             messages.append({"role": "user", "content": text_input})
             print(f"\n发送纯文本消息: {text_input}")
             
-        elif audio_url:
+        elif clean_audio_data:
             # 只有音频
             content_array = [
                 {
                     "type": "input_audio",
                     "input_audio": {
-                        "data": audio_url,
+                        "data": clean_audio_data,  # 直接发送Base64数据而不是URL
                         "format": "wav"
                     }
                 }
             ]
             messages.append({"role": "user", "content": content_array})
-            print(f"\n发送纯音频消息: {audio_url}")
+            print(f"\n发送纯音频消息: [音频数据]")
             
         else:
             # 无效输入情况
@@ -131,7 +122,13 @@ def chat():
         def generate():
             try:
                 # 使用 v0.28.0 API 结构与 Qwen-Omni 特定参数
-                print("\n发送到API的消息结构:", json.dumps(messages, ensure_ascii=False))
+                # 打印简版消息结构(不可直接打印完整Base64数据)
+                print("\n发送到API的消息结构(已省略Base64数据):", 
+                      json.dumps([{"role": m.get("role"), 
+                                  "content_type": "array" if isinstance(m.get("content"), list) else "text"} 
+                                 for m in messages], ensure_ascii=False))
+                
+                # 调用API
                 response = openai.ChatCompletion.create(
                     model="qwen-omni-turbo-0119",
                     messages=messages,
