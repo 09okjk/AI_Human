@@ -39,6 +39,9 @@ class VoiceChat {
      */
     async startCall() {
         try {
+            // 添加调试信息
+            console.log("尝试开始通话...");
+            
             // 防止重复启动
             if (this.isCallActive) {
                 console.log("通话已经处于活跃状态");
@@ -47,12 +50,16 @@ class VoiceChat {
             
             // 检查录音对话功能是否可用
             if (!this.audioRecorder) {
-                throw new Error("录音对话功能未连接");
+                console.error("录音对话功能未连接，请先调用setAudioRecorder()方法");
+                this.updateStatus('错误: 录音功能未正确初始化');
+                alert("录音功能未正确初始化，请刷新页面重试");
+                return;
             }
             
             this.updateStatus('开始通话中...');
             
             // 1. 创建服务器会话
+            console.log("正在创建服务器会话...");
             const response = await fetch('/api/voice-chat/session', {
                 method: 'POST'
             });
@@ -63,6 +70,7 @@ class VoiceChat {
             
             const data = await response.json();
             this.sessionId = data.session_id;
+            console.log(`会话创建成功，ID: ${this.sessionId}`);
             
             // 2. 更新状态
             this.isCallActive = true;
@@ -75,6 +83,7 @@ class VoiceChat {
             this.updateStatus('通话已开始，请说话');
             
             // 5. 启动首次录音
+            console.log("正在启动首次录音...");
             await this.startNewRecording();
             
         } catch (error) {
@@ -97,6 +106,11 @@ class VoiceChat {
             // 重置状态
             this.waitingForAiResponse = false;
             
+            // 检查录音对话功能的方法是否存在
+            if (typeof this.audioRecorder.startRecording !== 'function') {
+                throw new Error('录音对话功能缺少startRecording方法');
+            }
+            
             // 使用录音对话功能的启动录音方法
             // 我们需要覆盖原有的录音完成回调，使其自动处理连续对话
             await this.audioRecorder.startRecording(
@@ -106,11 +120,20 @@ class VoiceChat {
                 (audioLevel) => this.handleVoiceActivity(audioLevel)
             );
             
+            console.log("录音已成功启动");
             this.updateStatus('您可以开始说话');
             
         } catch (error) {
             console.error("启动录音失败:", error);
-            this.updateStatus('录音启动失败，请重试');
+            this.updateStatus('录音启动失败: ' + error.message);
+            
+            // 尝试重新开始录音
+            setTimeout(() => {
+                if (this.isCallActive && !this.waitingForAiResponse) {
+                    console.log("尝试重新启动录音...");
+                    this.startNewRecording();
+                }
+            }, 2000);
         }
     }
     
@@ -292,6 +315,38 @@ class VoiceChat {
             detail: { state: 'call-ended' }
         });
         document.dispatchEvent(event);
+    }
+
+    /**
+     * 添加初始化检查方法，验证所有依赖是否正确设置
+     */
+    checkInitialization() {
+        console.log("检查初始化状态...");
+        
+        if (!this.audioRecorder) {
+            console.error("录音对话功能未连接");
+            return false;
+        }
+        
+        // 检查必要的方法
+        const requiredMethods = [
+            'startRecording', 
+            'stopRecording', 
+            'processAudioAndSend',
+            'handleResponse'
+        ];
+        
+        const missingMethods = requiredMethods.filter(
+            method => typeof this.audioRecorder[method] !== 'function'
+        );
+        
+        if (missingMethods.length > 0) {
+            console.error(`录音对话功能缺少以下方法: ${missingMethods.join(', ')}`);
+            return false;
+        }
+        
+        console.log("初始化检查通过，所有依赖正确设置");
+        return true;
     }
 }
 
