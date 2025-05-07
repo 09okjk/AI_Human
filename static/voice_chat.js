@@ -180,9 +180,24 @@ class VoiceChat {
                 } 
             });
             
+            // 创建MediaRecorder - 使用WAV格式而非WebM
+            // 检查浏览器支持的MIME类型
+            let mimeType = 'audio/wav';
+            if (!MediaRecorder.isTypeSupported('audio/wav')) {
+                // 备选格式
+                if (MediaRecorder.isTypeSupported('audio/webm')) {
+                    mimeType = 'audio/webm';
+                } else {
+                    mimeType = '';  // 使用默认格式
+                }
+            }
+            
+            // 用于调试
+            console.log("使用录音MIME类型:", mimeType);
+            
             // 创建MediaRecorder
             this.mediaRecorder = new MediaRecorder(this.mediaStream, {
-                mimeType: 'audio/webm'
+                mimeType: mimeType
             });
             
             // 设置事件处理
@@ -405,8 +420,12 @@ class VoiceChat {
             
             document.getElementById('status-message').textContent = '处理音频数据...';
             
+            // 获取实际使用的MIME类型
+            const mimeType = this.mediaRecorder.mimeType || 'audio/webm';
+            console.log(`使用的录音MIME类型: ${mimeType}`);
+            
             // 处理音频数据
-            const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+            const audioBlob = new Blob(this.audioChunks, { type: mimeType });
             
             // 检查音频大小，太小的音频可能只是噪音
             if (audioBlob.size < 1000) {
@@ -421,7 +440,7 @@ class VoiceChat {
                 return;
             }
             
-            // 转换为base64
+            // 转换为base64 - 明确指定MIME类型
             console.log("转换音频数据为base64...");
             const base64Audio = await this.blobToBase64(audioBlob);
             
@@ -500,10 +519,12 @@ class VoiceChat {
             // 如果是最终部分，添加用户消息到UI
             if (isFinal) {
                 this.addMessage('您', '[语音输入]', 'user');
+                
+                // 等待一小段时间后再建立SSE连接，以确保POST处理完成
+                setTimeout(() => this.setupServerSentEvents(), 200);
+            } else {
+                this.setupServerSentEvents();
             }
-            
-            // 处理服务器响应流
-            this.handleServerResponse();
             
         } catch (error) {
             console.error('发送音频失败:', error);
@@ -516,95 +537,152 @@ class VoiceChat {
         }
     }
     
-    handleServerResponse() {
+    setupServerSentEvents() {
         // 设置新的SSE连接获取流式响应
         if (!this.sessionId || !this.isCallActive) return;
         
-        this.eventSource = new EventSource(`/api/voice-chat?session_id=${this.sessionId}&_=${Date.now()}`);
-        
-        let aiMessage = '';
-        let audioPlayed = false;
-        
-        this.eventSource.onmessage = (event) => {
-            // 检查通话是否仍然活跃
-            if (!this.isCallActive) {
-                if (this.eventSource) {
-                    this.eventSource.close();
-                    this.eventSource = null;
+        // 使用POST方法创建SSE，避免405错误
+        try {
+            // 为避免405错误，不再使用EventSource，改用fetch流式API
+            fetch(`/api/voice-chat/stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: this.sessionId
+                })
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                return;
-            }
-            
-            try {
-                const data = JSON.parse(event.data);
                 
-                switch (data.type) {
-                    case 'text':
-                        aiMessage += data.content;
-                        this.updateAIResponse(aiMessage);
-                        this.isAiSpeaking = true;
-                        document.getElementById('status-message').textContent = 'AI正在回复...';
-                        break;
-                        
-                    case 'audio':
-                        this.playAudioChunk(data.content);
-                        audioPlayed = true;
-                        this.isAiSpeaking = true;
-                        document.getElementById('status-message').textContent = 'AI正在语音回复...';
-                        break;
-                        
-                    case 'transcript':
-                        console.log('语音转写:', data.content);
-                        break;
-                        
-                    case 'interrupted':
-                        console.log('AI回复被打断');
-                        this.isAiSpeaking = false;
-                        document.getElementById('status-message').textContent = '用户打断了AI';
-                        break;
-                        
-                    case 'error':
-                        console.error('服务器错误:', data.content);
-                        this.addMessage('系统', `错误: ${data.content}`, 'system');
-                        this.isAiSpeaking = false;
-                        document.getElementById('status-message').textContent = '错误: ' + data.content;
-                        break;
-                }
-            } catch (error) {
-                console.error('处理服务器消息时出错:', error, event.data);
-            }
-        };
-        
-        this.eventSource.onerror = (error) => {
-            console.error('SSE连接错误或关闭');
-            
-            // 关闭连接
-            if (this.eventSource) {
-                this.eventSource.close();
-                this.eventSource = null;
-            }
-            
-            // 如果有内容，完成消息
-            if (aiMessage) {
-                this.completeAIResponse(aiMessage, audioPlayed);
-            }
-            
-            this.isAiSpeaking = false;
-            
-            // 只有在通话仍然活跃的情况下更新状态和重新开始录音
-            if (this.isCallActive) {
-                document.getElementById('status-message').textContent = '等待您说话';
+                const reader = response.body.getReader();
+                let aiMessage = '';
+                let audioPlayed = false;
                 
-                // 重新开始录音
-                if (!this.isRecording && !this.isProcessingAudio) {
-                    setTimeout(() => {
-                        if (this.isCallActive && !this.isRecording) {
-                            this.startRecording();
+                const readStream = () => {
+                    if (!this.isCallActive) return; // 如果通话结束，停止读取
+                    
+                    reader.read().then(({ done, value }) => {
+                        if (done) {
+                            // 流结束，如果有内容，完成消息
+                            if (aiMessage) {
+                                this.completeAIResponse(aiMessage, audioPlayed);
+                            }
+                            
+                            this.isAiSpeaking = false;
+                            if (this.isCallActive) {
+                                document.getElementById('status-message').textContent = '等待您说话';
+                                
+                                // 重新开始录音
+                                if (!this.isRecording && !this.isProcessingAudio) {
+                                    setTimeout(() => {
+                                        if (this.isCallActive && !this.isRecording) {
+                                            this.startRecording();
+                                        }
+                                    }, 300);
+                                }
+                            }
+                            return;
                         }
-                    }, 300);
+                        
+                        // 处理数据块
+                        const text = new TextDecoder().decode(value);
+                        const lines = text.split('\n\n');
+                        
+                        lines.forEach(line => {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    
+                                    switch (data.type) {
+                                        case 'text':
+                                            aiMessage += data.content;
+                                            this.updateAIResponse(aiMessage);
+                                            this.isAiSpeaking = true;
+                                            document.getElementById('status-message').textContent = 'AI正在回复...';
+                                            break;
+                                            
+                                        case 'audio':
+                                            this.playAudioChunk(data.content);
+                                            audioPlayed = true;
+                                            this.isAiSpeaking = true;
+                                            document.getElementById('status-message').textContent = 'AI正在语音回复...';
+                                            break;
+                                            
+                                        case 'transcript':
+                                            console.log('语音转写:', data.content);
+                                            break;
+                                            
+                                        case 'interrupted':
+                                            console.log('AI回复被打断');
+                                            this.isAiSpeaking = false;
+                                            document.getElementById('status-message').textContent = '用户打断了AI';
+                                            break;
+                                            
+                                        case 'error':
+                                            console.error('服务器错误:', data.content);
+                                            this.addMessage('系统', `错误: ${data.content}`, 'system');
+                                            this.isAiSpeaking = false;
+                                            document.getElementById('status-message').textContent = '错误: ' + data.content;
+                                            break;
+                                    }
+                                } catch (error) {
+                                    console.error('处理服务器消息时出错:', error, line);
+                                }
+                            }
+                        });
+                        
+                        // 继续读取流
+                        readStream();
+                    }).catch(error => {
+                        console.error('读取流时出错:', error);
+                        this.isAiSpeaking = false;
+                        
+                        // 如果有内容，完成消息
+                        if (aiMessage) {
+                            this.completeAIResponse(aiMessage, audioPlayed);
+                        }
+                        
+                        // 只有在通话仍然活跃的情况下更新状态和重新开始录音
+                        if (this.isCallActive) {
+                            document.getElementById('status-message').textContent = '等待您说话';
+                            
+                            // 重新开始录音
+                            if (!this.isRecording && !this.isProcessingAudio) {
+                                setTimeout(() => {
+                                    if (this.isCallActive && !this.isRecording) {
+                                        this.startRecording();
+                                    }
+                                }, 300);
+                            }
+                        }
+                    });
+                };
+                
+                readStream();
+            }).catch(error => {
+                console.error('创建流连接失败:', error);
+                this.isAiSpeaking = false;
+                
+                if (this.isCallActive) {
+                    document.getElementById('status-message').textContent = '连接失败，请重试';
+                    
+                    // 尝试恢复录音
+                    if (!this.isRecording && !this.isProcessingAudio) {
+                        setTimeout(() => {
+                            if (this.isCallActive && !this.isRecording) {
+                                this.startRecording();
+                            }
+                        }, 1000);
+                    }
                 }
-            }
-        };
+            });
+            
+        } catch (error) {
+            console.error('设置SSE连接失败:', error);
+        }
     }
     
     playAudioChunk(base64Data) {
