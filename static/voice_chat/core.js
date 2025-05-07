@@ -35,8 +35,20 @@ class VoiceChat {
         this.recordingTimeout = null;  // 录音超时保护
         this.MAX_RECORDING_TIME = 30000; // 最长录音30秒
 
+        // 引用录音问答功能实例
+        this.audioRecorder = null;  // 录音问答功能的实例引用
+
         // 初始化
         console.log("语音通话核心模块已初始化");
+    }
+    
+    /**
+     * 设置录音问答实例引用
+     * @param {Object} recorder - 录音问答功能的实例
+     */
+    setAudioRecorder(recorder) {
+        this.audioRecorder = recorder;
+        console.log("已连接录音问答功能");
     }
     
     /**
@@ -202,22 +214,73 @@ class VoiceChat {
             return;
         }
         
-        // 确保音频Blob的类型正确
-        const audioType = audioBlob.type || 'audio/wav';
-        const validatedBlob = audioBlob.type ? audioBlob : new Blob([audioBlob], { type: audioType });
-        
-        // 发送音频到服务器
-        this.sendAudioToServer(validatedBlob)
-            .then(response => {
-                // 处理从服务器返回的响应
-                this.handleServerResponse(response);
-            })
-            .catch(error => {
-                console.error("发送音频失败:", error);
-                this.updateStatus("发送失败，请重试");
-                // 恢复录音，允许用户重试
-                this.resumeRecording();
-            });
+        // 使用录音问答功能的方法发送音频
+        if (this.audioRecorder && typeof this.audioRecorder.processAudioAndSend === 'function') {
+            // 添加正在处理的提示
+            this.updateStatus("正在处理您的语音...");
+            
+            // 调用录音问答的处理方法
+            this.audioRecorder.processAudioAndSend(audioBlob, this.sessionId)
+                .then(response => {
+                    // 使用录音问答功能的响应处理方法
+                    if (typeof this.audioRecorder.handleResponse === 'function') {
+                        // 处理响应，但添加onFirstChunk回调
+                        const originalHandleResponse = this.audioRecorder.handleResponse.bind(this.audioRecorder);
+                        
+                        // 标记是否已收到第一个回复块
+                        let firstChunkReceived = false;
+                        
+                        // 包装原始响应处理方法
+                        const wrappedResponse = {
+                            ...response,
+                            // 如果有流式响应处理，添加回调
+                            onChunk: (chunk) => {
+                                if (!firstChunkReceived) {
+                                    firstChunkReceived = true;
+                                    // 收到第一个回复块，恢复录音
+                                    if (this.waitingForAiResponse) {
+                                        this.resumeRecording();
+                                    }
+                                }
+                                
+                                // 调用原始onChunk如果存在
+                                if (response.onChunk) {
+                                    response.onChunk(chunk);
+                                }
+                            }
+                        };
+                        
+                        originalHandleResponse(wrappedResponse);
+                    } else {
+                        // 如果没有处理方法，使用基本处理
+                        this.handleServerResponse(response);
+                    }
+                })
+                .catch(error => {
+                    console.error("发送音频失败:", error);
+                    this.updateStatus("发送失败，请重试");
+                    // 恢复录音，允许用户重试
+                    this.resumeRecording();
+                });
+        } else {
+            // 回退到内部处理方法
+            console.warn("录音问答功能不可用，使用内部处理方法");
+            
+            // 确保音频Blob的类型正确
+            const audioType = audioBlob.type || 'audio/wav';
+            const validatedBlob = audioBlob.type ? audioBlob : new Blob([audioBlob], { type: audioType });
+            
+            // 使用内部方法发送音频
+            this.sendAudioToServer(validatedBlob)
+                .then(response => {
+                    this.handleServerResponse(response);
+                })
+                .catch(error => {
+                    console.error("发送音频失败:", error);
+                    this.updateStatus("发送失败，请重试");
+                    this.resumeRecording();
+                });
+        }
     }
     
     /**
@@ -323,7 +386,13 @@ class VoiceChat {
         };
         
         // 开始播放AI回复
-        this.playAiResponse(response, onFirstChunk);
+        if (this.audioRecorder && typeof this.audioRecorder.playAiResponse === 'function') {
+            // 使用录音问答的播放方法
+            this.audioRecorder.playAiResponse(response, onFirstChunk);
+        } else {
+            // 使用内部播放方法
+            this.playAiResponse(response, onFirstChunk);
+        }
     }
     
     /**
