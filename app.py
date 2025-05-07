@@ -293,6 +293,123 @@ def voice_chat():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/voice-chat/stream', methods=['POST'])
+def voice_chat_stream():
+    """获取语音通话响应流"""
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        
+        # 验证会话
+        if not session_id or session_id not in active_calls:
+            return jsonify({"error": "无效的会话ID"}), 400
+            
+        # 从会话历史中获取消息
+        conversation_history = active_calls[session_id]['messages']
+        
+        # 准备发送给API的完整历史消息
+        messages = conversation_history.copy()
+        
+        def generate():
+            try:
+                # 标记AI正在说话
+                active_calls[session_id]['is_speaking'] = True
+                
+                # 使用 v0.28.0 API 结构与 Qwen-Omni 特定参数
+                print("\n发送到API的消息结构(已省略Base64数据):", 
+                      json.dumps([{"role": m.get("role"), 
+                                  "content_type": "array" if isinstance(m.get("content"), list) else "text"} 
+                                 for m in messages], ensure_ascii=False))
+                
+                # 如果没有消息，返回默认回复
+                if not messages:
+                    yield f"data: {json.dumps({'type': 'text', 'content': '请说些什么，我在听。'})}\n\n"
+                    return
+                
+                # 调用API
+                response = openai.ChatCompletion.create(
+                    model="qwen-omni-turbo-0119",
+                    messages=messages,
+                    stream=True,
+                    # 配置 Qwen API 特定参数
+                    modalities=["text", "audio"],
+                    audio={"voice": "Cherry", "format": "wav"},
+                    # 添加流选项以包含 usage 信息
+                    stream_options={"include_usage": True}
+                )
+                
+                collected_response = {"role": "assistant", "content": "", "audio_parts": []}
+                
+                for chunk in response:
+                    # 检查打断标志
+                    if interrupt_flags.get(session_id, False):
+                        print(f"检测到用户打断，结束AI回复流 (会话: {session_id})")
+                        yield f"data: {json.dumps({'type': 'interrupted', 'content': '用户打断了回复'})}\n\n"
+                        break
+                    
+                    # 检查特殊情况：完成通知或结束标记
+                    if 'choices' not in chunk:
+                        continue
+                    
+                    # 确保choices列表不为空再访问
+                    if not chunk['choices'] or len(chunk['choices']) == 0:
+                        continue
+                        
+                    # 安全地获取choice
+                    choice = chunk['choices'][0]
+                    
+                    # 处理文本内容
+                    if 'delta' in choice and 'content' in choice['delta'] and choice['delta']['content']:
+                        text_content = choice['delta']['content']
+                        collected_response["content"] += text_content
+                        yield f"data: {json.dumps({'type': 'text', 'content': text_content})}\n\n"
+                    
+                    # 处理音频数据
+                    if 'delta' in choice and 'audio' in choice['delta']:
+                        try:
+                            # 尝试获取音频数据
+                            if 'data' in choice['delta']['audio']:
+                                audio_data = choice['delta']['audio']['data']
+                                collected_response["audio_parts"].append(audio_data)
+                                yield f"data: {json.dumps({'type': 'audio', 'content': audio_data})}\n\n"
+                            # 尝试获取转录文本
+                            elif 'transcript' in choice['delta']['audio']:
+                                transcript = choice['delta']['audio']['transcript']
+                                yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
+                        except Exception as e:
+                            print(f"处理音频响应时出错: {e}")
+                            continue
+                            
+                    # 检查是否是最后一个消息
+                    if choice.get('finish_reason') is not None:
+                        print("流式响应完成，原因:", choice.get('finish_reason'))
+                        # 简化音频部分数据存储，避免消息过大
+                        if collected_response.get("audio_parts", []):
+                            collected_response["has_audio"] = True
+                            collected_response.pop("audio_parts", None)
+                        # 添加到对话历史
+                        conversation_history.append(collected_response)
+            
+            except Exception as e:
+                print(f"生成响应时发生错误: {e}")
+                import traceback
+                traceback.print_exc()
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            finally:
+                # 无论如何标记AI已停止说话
+                if session_id in active_calls:
+                    active_calls[session_id]['is_speaking'] = False
+                # 重置打断标志
+                interrupt_flags[session_id] = False
+                
+        return Response(stream_with_context(generate()), content_type='text/event-stream')
+        
+    except Exception as e:
+        print(f"流式响应发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 # 定期清理过期会话
 def cleanup_sessions():
     """清理超过超时时间的会话"""
