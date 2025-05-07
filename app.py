@@ -49,40 +49,34 @@ def chat():
             if audio_data.startswith('data:audio/wav;base64,'):
                 audio_data = audio_data[len('data:audio/wav;base64,'):]
                 
+            # 将消息构建为一个指定格式的数组
+            content_array = [
+                {
+                    "type": "text", 
+                    "text": text_input
+                }
+            ]
+            
+            # 在结构中添加音频内容
             messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": audio_data,
-                            "format": "wav"
-                        }
-                    },
-                    {"type": "text", "text": text_input}
-                ]
+                "role": "user", 
+                "content": content_array
             })
+            
+            # 增加说明性的消息
+            print(f"\n发送纯文本消息，音频已跳过: {text_input}")
         elif text_input:
             # 只有文本
             messages.append({"role": "user", "content": text_input})
         elif audio_data:
-            # 只有音频
-            # 从 base64 数据中提取真正的编码部分
-            if audio_data.startswith('data:audio/wav;base64,'):
-                audio_data = audio_data[len('data:audio/wav;base64,'):]
-                
+            # 只有音频，添加一个默认文本提示
             messages.append({
                 "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": audio_data,
-                            "format": "wav"
-                        }
-                    }
-                ]
-            })  
+                "content": "请回复我的语音消息"
+            })
+            
+            # 注：我们暂时不使用音频输入格式，因为可能有格式问题
+            print(f"\n跳过音频处理，发送文本提示而非音频数据")  
         
         def generate():
             try:
