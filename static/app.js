@@ -181,3 +181,31 @@ document.addEventListener('DOMContentLoaded', () => {
  * <script src="./js/message-handler.js"></script>
  * <script src="./app.js"></script>
  */
+
+// 通话控制功能
+document.addEventListener('DOMContentLoaded', function() {
+    const startCallButton = document.getElementById('start-call');
+    const endCallButton = document.getElementById('end-call');
+    const statusMessage = document.getElementById('status-message');
+    
+    // 如果已加载语音通话模块，则连接按钮与该功能
+    startCallButton.addEventListener('click', function() {
+        if (window.voiceChat) {
+            window.voiceChat.startCall();
+            startCallButton.disabled = true;
+            endCallButton.disabled = false;
+            statusMessage.textContent = '通话已开始，请说话';
+        } else {
+            statusMessage.textContent = '语音通话模块未加载';
+        }
+    });
+    
+    endCallButton.addEventListener('click', function() {
+        if (window.voiceChat) {
+            window.voiceChat.endCall();
+            startCallButton.disabled = false;
+            endCallButton.disabled = true;
+            statusMessage.textContent = '通话已结束';
+        }
+    });
+});

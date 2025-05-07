@@ -251,3 +251,52 @@ header h1 i {
         max-width: 85%;
     }
 }
+
+/* 通话控制按钮样式 */
+.call-controls {
+    display: flex;
+    justify-content: center;
+    margin: 15px 0;
+    gap: 10px;
+}
+
+.call-button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 20px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.call-button i {
+    font-size: 16px;
+}
+
+.start-call {
+    background-color: #4caf50;
+    color: white;
+}
+
+.start-call:hover {
+    background-color: #3d8b40;
+}
+
+.end-call {
+    background-color: #f44336;
+    color: white;
+}
+
+.end-call:hover {
+    background-color: #d32f2f;
+}
+
+.call-button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+    opacity: 0.7;
+}

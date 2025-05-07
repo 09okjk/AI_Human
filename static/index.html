@@ -48,17 +48,17 @@
             <h1><i class="fas fa-robot"></i> AI 语音对话</h1>
         </header>
         
-        <div class="instructions">
+        <!-- <div class="instructions">
             <h2>使用说明</h2>
             <p>这是一个支持实时语音对话的AI系统。点击右下角的"开始通话"按钮开始一段新的对话。</p>
-        </div>
+        </div> -->
         
         <div class="chat-container">
             <div class="chat-messages" id="chat-messages">
                 <!-- Messages will be displayed here -->
-                <div class="welcome-message">
+                <!-- <div class="welcome-message">
                     <p>欢迎使用 AI 语音对话。点击麦克风按钮开始说话，或者直接输入文字。</p>
-                </div>
+                </div> -->
             </div>
             
             <div class="chat-input">
@@ -81,7 +81,17 @@
             </div>
         </div>
         
-        <div class="feature-list">
+        <!-- 添加通话控制按钮 -->
+        <div class="call-controls">
+            <button id="start-call" class="call-button start-call" title="开始语音通话">
+                <i class="fas fa-phone"></i> 开始通话
+            </button>
+            <button id="end-call" class="call-button end-call" title="结束语音通话" disabled>
+                <i class="fas fa-phone-slash"></i> 结束通话
+            </button>
+        </div>
+        
+        <!-- <div class="feature-list">
             <h3>功能特点：</h3>
             <ul>
                 <li><strong>实时语音对话</strong> - 实时检测语音，自动识别用户说话状态</li>
@@ -98,7 +108,7 @@
                 <li>开始说话时可以打断AI回复</li>
                 <li>完成对话后请点击"结束通话"按钮</li>
             </ul>
-        </div>
+        </div> -->
         
         <div class="status-bar">
             <div id="status-message">就绪</div>
