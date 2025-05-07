@@ -4,15 +4,21 @@
  * 基于录音对话功能，实现连续对话
  */
 class VoiceChat {
+    /**
+     * 构造函数
+     */
     constructor() {
         // 核心状态
         this.isCallActive = false;     // 通话是否活跃
         this.sessionId = null;         // 会话ID
         this.waitingForAiResponse = false; // 是否等待AI响应
+        this.isSpeaking = false;       // 用户是否正在说话
         
         // 语音活动检测（VAD）相关
         this.silenceTimer = null;      // 静音计时器
         this.silenceTimeout = 1800;    // 静音超时时间(ms)，1.8秒无声判定说话结束
+        this.consecutiveSpeakingFrames = 0; // 连续说话帧数
+        this.consecutiveSilentFrames = 0;   // 连续静音帧数
         
         // 引用录音对话功能实例
         this.audioRecorder = null;     // 录音对话功能的实例引用
@@ -105,6 +111,9 @@ class VoiceChat {
             
             // 重置状态
             this.waitingForAiResponse = false;
+            this.isSpeaking = false;
+            this.consecutiveSpeakingFrames = 0;
+            this.consecutiveSilentFrames = 0;
             
             // 检查录音对话功能的方法是否存在
             if (typeof this.audioRecorder.startRecording !== 'function') {
@@ -170,9 +179,34 @@ class VoiceChat {
     handleResponse(response) {
         if (!this.isCallActive) return;
         
+        // 创建标记，用于跟踪是否收到第一个响应块
+        let hasReceivedFirstChunk = false;
+        
         // 绑定onComplete回调，用于AI回复结束后自动启动下一轮录音
         const wrappedResponse = {
             ...response,
+            // 接收每个响应块的回调
+            onChunk: (chunk) => {
+                // 如果这是第一个响应块，准备下一轮录音
+                if (!hasReceivedFirstChunk) {
+                    hasReceivedFirstChunk = true;
+                    console.log("收到AI的第一个响应块，准备下一轮录音");
+                    
+                    // 收到响应后的短暂延迟，避免太快开始新录音
+                    setTimeout(() => {
+                        if (this.isCallActive && this.waitingForAiResponse) {
+                            this.waitingForAiResponse = false;
+                            // 不立即启动录音，等待AI回复完成
+                        }
+                    }, 300);
+                }
+                
+                // 调用原始onChunk如果存在
+                if (response.onChunk) {
+                    response.onChunk(chunk);
+                }
+            },
+            // AI回复完成后的回调
             onComplete: async () => {
                 console.log("AI回复完成，准备下一轮录音");
                 
@@ -182,7 +216,7 @@ class VoiceChat {
                         if (this.isCallActive) {
                             await this.startNewRecording();
                         }
-                    }, 500);
+                    }, 800); // 增加延迟，给用户更多反应时间
                 }
                 
                 // 调用原始onComplete如果存在
@@ -201,8 +235,111 @@ class VoiceChat {
      * @param {number} audioLevel - 音频电平值
      */
     handleVoiceActivity(audioLevel) {
-        // 这里可以添加UI反馈，如显示声波等
-        // 但核心VAD检测由录音对话功能处理
+        // 设置阈值
+        const speakingThreshold = 0.015;
+        const silenceThreshold = 0.01;
+        
+        // 判断当前帧是否有语音活动
+        const isSpeakingNow = audioLevel > speakingThreshold;
+        const isSilentNow = audioLevel < silenceThreshold;
+        
+        // 更新连续帧计数
+        if (isSpeakingNow) {
+            this.consecutiveSpeakingFrames = (this.consecutiveSpeakingFrames || 0) + 1;
+            this.consecutiveSilentFrames = 0;
+            
+            // 如果连续3帧以上检测到声音，判定为说话状态
+            if (this.consecutiveSpeakingFrames >= 3 && !this.isSpeaking) {
+                this.isSpeaking = true;
+                this.updateStatus('正在说话...');
+                
+                // 清除可能已经设置的静音定时器
+                if (this.silenceTimer) {
+                    clearTimeout(this.silenceTimer);
+                    this.silenceTimer = null;
+                }
+            }
+        } else if (isSilentNow && this.isSpeaking) {
+            this.consecutiveSilentFrames = (this.consecutiveSilentFrames || 0) + 1;
+            this.consecutiveSpeakingFrames = 0;
+            
+            // 开始检测静音状态
+            if (this.consecutiveSilentFrames >= 15) { // 约0.3秒静音
+                // 如果没有静音计时器，设置一个
+                if (!this.silenceTimer) {
+                    this.updateStatus('检测到语音停止，等待确认...');
+                    
+                    // 设置静音计时器，如果持续静音1.5秒，认为用户说话结束
+                    this.silenceTimer = setTimeout(() => {
+                        if (this.isCallActive && this.isSpeaking) {
+                            this.isSpeaking = false;
+                            this.updateStatus('检测到您已说话结束，正在处理...');
+                            
+                            // 自动停止录音并处理
+                            this.autoStopAndSendRecording();
+                        }
+                        this.silenceTimer = null;
+                    }, 1500); // 1.5秒静音阈值
+                }
+            }
+        }
+        
+        // 可以在这里添加UI反馈，如显示声波等
+        if (typeof this.updateVoiceIndicator === 'function') {
+            this.updateVoiceIndicator(audioLevel);
+        }
+    }
+    
+    /**
+     * 自动停止录音并发送
+     */
+    async autoStopAndSendRecording() {
+        if (!this.isCallActive || !this.audioRecorder) return;
+        
+        try {
+            console.log("自动停止录音并处理");
+            
+            // 停止录音并获取音频数据
+            const audioBlob = await this.audioRecorder.stopRecording();
+            
+            if (audioBlob && audioBlob.size > 0) {
+                // 设置等待状态
+                this.waitingForAiResponse = true;
+                this.updateStatus("正在处理您的语音...");
+                
+                try {
+                    // 处理并发送音频
+                    const response = await this.audioRecorder.processAudioAndSend(audioBlob, this.sessionId);
+                    
+                    // 注册第一个响应块的回调，以便在收到响应时启动新录音
+                    this.handleResponse(response);
+                } catch (error) {
+                    console.error("处理录音失败:", error);
+                    this.updateStatus("处理失败，正在重新启动录音");
+                    this.waitingForAiResponse = false;
+                    
+                    // 短暂延迟后重新开始录音
+                    setTimeout(() => {
+                        if (this.isCallActive) {
+                            this.startNewRecording();
+                        }
+                    }, 1000);
+                }
+            } else {
+                console.log("没有有效的录音数据，重新开始录音");
+                this.startNewRecording();
+            }
+        } catch (error) {
+            console.error("自动处理录音失败:", error);
+            this.updateStatus("录音处理失败，正在重新启动");
+            
+            // 短暂延迟后重新开始录音
+            setTimeout(() => {
+                if (this.isCallActive) {
+                    this.startNewRecording();
+                }
+            }, 1000);
+        }
     }
     
     /**
@@ -217,6 +354,13 @@ class VoiceChat {
             
             // 1. 立即更新状态，防止后续操作
             this.isCallActive = false;
+            this.isSpeaking = false;
+            
+            // 清除所有计时器
+            if (this.silenceTimer) {
+                clearTimeout(this.silenceTimer);
+                this.silenceTimer = null;
+            }
             
             // 2. 停止当前录音
             if (this.audioRecorder && typeof this.audioRecorder.stopRecording === 'function') {
