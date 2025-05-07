@@ -151,24 +151,45 @@ def chat():
                 )
                 
                 for chunk in response:
-                    # Extract content from the stream
-                    if 'choices' in chunk:
-                        choice = chunk['choices'][0]
-                        if 'delta' in choice and 'content' in choice['delta'] and choice['delta']['content']:
-                            # Text content
-                            yield f"data: {json.dumps({'type': 'text', 'content': choice['delta']['content']})}\n\n"
+                    # 调试输出当前块的结构
+                    # print(f"收到的块: {json.dumps(chunk)}")
+                    
+                    # 检查特殊情况：完成通知或结束标记
+                    if 'choices' not in chunk:
+                        continue
+                    
+                    # 确保choices列表不为空再访问
+                    if not chunk['choices'] or len(chunk['choices']) == 0:
+                        continue
                         
-                        # Check for audio data in a manner compatible with Dashscope API
-                        if 'delta' in choice and 'audio' in choice['delta']:
-                            try:
+                    # 安全地获取choice
+                    choice = chunk['choices'][0]
+                    
+                    # 处理文本内容
+                    if 'delta' in choice and 'content' in choice['delta'] and choice['delta']['content']:
+                        yield f"data: {json.dumps({'type': 'text', 'content': choice['delta']['content']})}\n\n"
+                    
+                    # 处理音频数据
+                    if 'delta' in choice and 'audio' in choice['delta']:
+                        try:
+                            # 尝试获取音频数据
+                            if 'data' in choice['delta']['audio']:
                                 audio_data = choice['delta']['audio']['data']
                                 yield f"data: {json.dumps({'type': 'audio', 'content': audio_data})}\n\n"
-                            except Exception as e:
-                                # Try to get transcript if available
-                                if 'transcript' in choice['delta']['audio']:
-                                    transcript = choice['delta']['audio']['transcript']
-                                    yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
+                            # 尝试获取转录文本
+                            elif 'transcript' in choice['delta']['audio']:
+                                transcript = choice['delta']['audio']['transcript']
+                                yield f"data: {json.dumps({'type': 'transcript', 'content': transcript})}\n\n"
+                        except Exception as e:
+                            print(f"处理音频响应时出错: {e}")
+                            continue
+                            
+                    # 检查是否是最后一个消息
+                    if choice.get('finish_reason') is not None:
+                        print("流式响应完成，原因:", choice.get('finish_reason'))
+            
             except Exception as e:
+                print(f"生成响应时发生错误: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
                 
         return Response(stream_with_context(generate()), content_type='text/event-stream')
