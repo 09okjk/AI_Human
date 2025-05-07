@@ -194,8 +194,20 @@ class VoiceChat {
         // 暂停录音，等待AI响应
         this.pauseRecording();
         
+        // 检查音频Blob是否有效
+        if (!audioBlob || audioBlob.size === 0) {
+            console.error("无效的音频数据");
+            this.updateStatus("录音失败，请重试");
+            this.resumeRecording();
+            return;
+        }
+        
+        // 确保音频Blob的类型正确
+        const audioType = audioBlob.type || 'audio/wav';
+        const validatedBlob = audioBlob.type ? audioBlob : new Blob([audioBlob], { type: audioType });
+        
         // 发送音频到服务器
-        this.sendAudioToServer(audioBlob)
+        this.sendAudioToServer(validatedBlob)
             .then(response => {
                 // 处理从服务器返回的响应
                 this.handleServerResponse(response);
@@ -206,6 +218,97 @@ class VoiceChat {
                 // 恢复录音，允许用户重试
                 this.resumeRecording();
             });
+    }
+    
+    /**
+     * 将音频数据发送到服务器
+     * @param {Blob} audioBlob 音频数据
+     * @returns {Promise} 服务器响应
+     */
+    async sendAudioToServer(audioBlob) {
+        if (!this.sessionId) {
+            throw new Error("无效的会话ID");
+        }
+        
+        try {
+            // 转换为Base64并确保有正确的MIME类型
+            const audioBase64 = await this.blobToBase64WithMimeType(audioBlob);
+            
+            // 准备消息结构
+            const message = {
+                role: "user",
+                content: [{
+                    type: "audio",
+                    audio: audioBase64
+                }]
+            };
+            
+            const requestData = {
+                session_id: this.sessionId,
+                messages: [message]
+            };
+            
+            // 发送请求
+            const response = await fetch('/api/voice-chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`服务器响应错误: ${response.status}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            console.error("发送音频数据时出错:", error);
+            throw error;
+        }
+    }
+    
+    /**
+     * 将Blob对象转换为包含MIME类型的Base64字符串
+     * @param {Blob} blob 音频Blob对象
+     * @returns {Promise<string>} 格式为 "data:mime/type;base64,DATA" 的字符串
+     */
+    blobToBase64WithMimeType(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                try {
+                    let base64String = reader.result;
+                    
+                    // 确保数据URL格式正确
+                    if (!base64String.startsWith('data:')) {
+                        base64String = `data:${blob.type};base64,${base64String.split(',')[1] || base64String}`;
+                    }
+                    
+                    // 确保MIME类型存在
+                    if (base64String.indexOf('data:;base64,') === 0) {
+                        base64String = `data:${blob.type || 'audio/wav'};base64,${base64String.split(',')[1]}`;
+                    }
+                    
+                    // 验证并修复Base64部分（确保长度是4的倍数）
+                    const parts = base64String.split(',');
+                    const header = parts[0];
+                    let data = parts[1] || '';
+                    
+                    // 修复Base64数据长度
+                    const remainder = data.length % 4;
+                    if (remainder > 0) {
+                        data += '='.repeat(4 - remainder);
+                    }
+                    
+                    resolve(`${header},${data}`);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
     }
     
     /**
