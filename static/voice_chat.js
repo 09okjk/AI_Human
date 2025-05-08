@@ -7,7 +7,10 @@
 
 // 导入必要的模块
 import VoiceChat from './voice_chat/core.js';
-import AudioRecorder from './js/audio-recorder.js'; // 引入录音对话功能
+import AudioRecorder from './js/audio-recorder.js';
+import AudioStreamingSystem from './js/audio-streaming.js';
+import MessageHandler from './js/message-handler.js';
+import Typewriter from './js/typewriter.js';
 
 // 初始化全局对象
 let voiceChat = null;
@@ -18,39 +21,86 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log("初始化语音通话模块...");
     
     try {
-        // 1. 创建音频上下文
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // 获取必要的DOM元素
+        const elementRefs = {
+            chatMessages: document.getElementById('chat-messages'),
+            statusElement: document.getElementById('status-message'),
+            startButton: document.getElementById('start-call'),
+            stopButton: document.getElementById('end-call')
+        };
         
-        // 2. 初始化录音对话功能
-        const statusElement = document.getElementById('status-message');
-        audioRecorder = new AudioRecorder(statusElement);
-        
-        // 3. 初始化语音通话功能
-        voiceChat = new VoiceChat();
-        
-        // 4. 连接录音对话功能和语音通话功能
-        voiceChat.setAudioRecorder(audioRecorder);
-        
-        // 5. 验证初始化
-        if (!voiceChat.checkInitialization()) {
-            console.error("语音通话功能初始化失败");
-            if (statusElement) {
-                statusElement.textContent = "语音通话功能初始化失败，请刷新页面重试";
+        // 验证DOM元素
+        for (const [key, element] of Object.entries(elementRefs)) {
+            if (!element) {
+                console.warn(`DOM元素 '${key}' 未找到`);
             }
-        } else {
-            console.log("语音通话模块初始化成功");
         }
         
-        // 6. 将实例暴露给全局，方便访问
-        window.voiceChat = voiceChat;
-        window.audioRecorder = audioRecorder;
+        // 初始化VoiceChat实例
+        voiceChat = new VoiceChat(elementRefs);
         
+        // 将实例暴露给全局，方便其他模块（如app.js）访问
+        window.voiceChat = voiceChat;
+        
+        // 添加兼容方法，确保app.js中的调用能正常工作
+        window.voiceChat.startCall = function() {
+            return this.startConversation();
+        };
+        
+        window.voiceChat.endCall = function() {
+            return this.endConversation();
+        };
+        
+        // 检查浏览器兼容性
+        checkBrowserSupport(elementRefs.statusElement);
+        
+        console.log("语音通话模块初始化成功");
     } catch (error) {
         console.error("语音通话模块初始化失败:", error);
     }
     
     console.log("语音通话模块已加载 - 使用模块化架构");
 });
+
+/**
+ * 检查浏览器是否支持所需的API
+ * @param {HTMLElement} statusElement - 状态显示元素
+ */
+function checkBrowserSupport(statusElement) {
+    // 检查浏览器是否支持必要的Web API
+    const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const hasAudioContext = !!(window.AudioContext || window.webkitAudioContext);
+    const hasWebAudio = !!window.AudioBuffer;
+    const hasEventSource = !!window.EventSource;
+    
+    let supportMessage = "";
+    let isSupported = true;
+    
+    if (!hasMediaDevices) {
+        supportMessage += "麦克风API不支持! ";
+        isSupported = false;
+    }
+    
+    if (!hasAudioContext || !hasWebAudio) {
+        supportMessage += "Web Audio API不支持! ";
+        isSupported = false;
+    }
+    
+    if (!hasEventSource) {
+        supportMessage += "EventSource API不支持! ";
+        isSupported = false;
+    }
+    
+    if (!isSupported && statusElement) {
+        statusElement.textContent = "浏览器不完全支持所需功能: " + supportMessage;
+        statusElement.style.color = "#f44336";
+        console.warn("浏览器兼容性问题:", supportMessage);
+        return false;
+    }
+    
+    // 如果一切正常，不更改原始状态消息
+    return true;
+}
 
 // 导出语音通话模块
 export { voiceChat, audioRecorder };
