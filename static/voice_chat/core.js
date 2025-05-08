@@ -49,8 +49,76 @@ class VoiceChat {
         this.silenceTimer = null;
         this.silenceThreshold = 1.5; // 静音阈值（秒）
         
+        // 消息队列管理
+        this.messageQueues = {};
+        this.currentQueueId = null;
+        this.requestCounter = 0; // 用于生成唯一的请求ID
+        
+        // 当MessageHandler收到消息时的回调函数
+        // 注入消息过滤功能
+        this.injectMessageFilter();
+        
         // 绑定按钮事件
         this.bindEvents();
+    }
+    
+    /**
+     * 向MessageHandler注入消息过滤功能
+     * 确保只处理当前活跃队列的消息
+     */
+    injectMessageFilter() {
+        // 如果MessageHandler中有原始的handleSSEResponse方法，保存它
+        const originalHandleSSE = this.messageHandler.handleSSEResponse;
+        
+        // 重写处理SSE流的方法，添加队列ID检查
+        this.messageHandler.handleSSEResponse = async (response, queueId) => {
+            // 如果没有指定队列ID，使用当前队列ID
+            const activeQueueId = queueId || this.currentQueueId;
+            
+            // 如果这个队列不再是活跃队列，则忽略消息
+            if (activeQueueId !== this.currentQueueId) {
+                console.log(`跳过消息处理: 队列 ${activeQueueId} 已被打断`);
+                return;
+            }
+            
+            // 创建这个队列的条目（如果不存在）
+            if (!this.messageQueues[activeQueueId]) {
+                this.messageQueues[activeQueueId] = {
+                    isActive: true,
+                    messageElement: null,
+                    textBuffer: '',
+                    audioChunks: []
+                };
+            }
+            
+            // 调用原始的处理方法，但将队列ID传递给它
+            return originalHandleSSE.call(this.messageHandler, response);
+        };
+        
+        // 重写Typewriter核心功能，添加队列管理
+        // 保存原始方法
+        const originalAddToTypingBuffer = Typewriter.addToTypingBuffer;
+        const originalStartTypewriter = Typewriter.startTypewriter;
+        
+        // 重写添加文本到缓冲区的方法
+        Typewriter.addToTypingBuffer = (content, isTranscript) => {
+            // 调用原始方法
+            return originalAddToTypingBuffer.call(Typewriter, content, isTranscript);
+        };
+        
+        // 我们还需要注入音频系统的同样功能
+        const originalAddAudioChunk = this.audioSystem.addAudioChunk;
+        
+        this.audioSystem.addAudioChunk = (base64Data) => {
+            // 只有活跃队列的音频才被处理
+            if (this.isAiResponding) {
+                return originalAddAudioChunk.call(this.audioSystem, base64Data);
+            } else {
+                // 当AI没有在响应时，不处理音频块
+                console.log('已跳过已打断队列的音频块');
+                return;
+            }
+        };
     }
     
     /**
@@ -246,6 +314,29 @@ class VoiceChat {
                 return; // 直接返回，不发送请求
             }
             
+            // 创建一个新的队列ID
+            this.requestCounter++;
+            const queueId = `queue-${Date.now()}-${this.requestCounter}`;
+            
+            // 如果有当前活跃队列，将其设置为默认不活跃
+            if (this.currentQueueId && this.messageQueues[this.currentQueueId]) {
+                this.messageQueues[this.currentQueueId].isActive = false;
+            }
+            
+            // 设置新队列为当前活跃队列
+            this.currentQueueId = queueId;
+            
+            // 设置当前队列项
+            this.messageQueues[queueId] = {
+                isActive: true,
+                messageElement: null,
+                textBuffer: '',
+                audioChunks: [],
+                timestamp: Date.now()
+            };
+            
+            console.log(`创建新的消息队列: ${queueId}`);
+            
             // 在应用级别创建AbortController管理
             if (!window.activeRequests) {
                 window.activeRequests = [];
@@ -269,7 +360,8 @@ class VoiceChat {
                 },
                 body: JSON.stringify({
                     audio: base64Audio,
-                    session_id: this.sessionId
+                    session_id: this.sessionId,
+                    queue_id: queueId  // 添加队列ID，用于在处理时区分不同的请求
                 }),
                 signal: signal // 使用AbortSignal来支持取消
             });
@@ -284,20 +376,28 @@ class VoiceChat {
                 throw new Error(`服务器响应错误: ${response.status}`);
             }
             
+            // 如果这个请求的队列不再是当前活跃队列，则忽略响应
+            if (queueId !== this.currentQueueId) {
+                console.log(`跳过处理: 队列 ${queueId} 已不是活跃队列`);
+                return;
+            }
+            
             // 切换为AI响应状态
             this.isAiResponding = true;
             this.setStatus("AI正在回复...");
             
-            // 使用MessageHandler直接处理响应
-            // 不需要再添加用户消息，sendMessage会处理
-            this.messageHandler.sendMessage('', base64Audio);
+            // 使用MessageHandler直接处理响应，传入队列ID
+            this.messageHandler.sendMessage('', base64Audio, queueId);
             
             // 使用更可靠的方式添加监听器，以支持打断功能
             // 在首次响应到达后启动新的录音
-            // 使用定时器而不是SSE监听，因为这更稳定
             setTimeout(() => {
-                if (this.isSessionActive && !this.isListening && this.isAiResponding) {
-                    console.log('已收到AI响应，开启录音以支持打断');
+                // 只有当前队列还是活跃的时候才开始新的录音
+                if (this.isSessionActive && !this.isListening && this.isAiResponding && 
+                    this.currentQueueId === queueId && 
+                    this.messageQueues[queueId] && this.messageQueues[queueId].isActive) {
+                    
+                    console.log(`已收到队列 ${queueId} 的AI响应，开启录音以支持打断`);
                     this.startListening();
                 }
             }, 1500); // 约荃1.5秒后开始录音，这个时间应该足以收到第一个响应
@@ -514,62 +614,35 @@ class VoiceChat {
         
         console.log("正在打断AI响应...");
         
-        // 立即结束AI响应状态
-        this.isAiResponding = false;
-        
-        // 1. 清除消息队列 - 找到并访问相关对象
-        try {
-            // 清除AudioSystem的所有音频片段
-            if (this.audioSystem) {
-                console.log('清除音频队列...');
-                this.audioSystem.reset(); // 重置音频系统
-                this.audioSystem.audioQueue = []; // 清空队列
-                this.audioSystem.hasNewChunks = false; // 重置状态
-                this.audioSystem.isProcessing = false;
-                this.audioSystem.isPlaying = false;
-            }
+        // 停用当前队列，以防止更多消息被处理
+        if (this.currentQueueId && this.messageQueues[this.currentQueueId]) {
+            console.log(`停用队列: ${this.currentQueueId}`);
+            this.messageQueues[this.currentQueueId].isActive = false;
             
-            // 清除MessageHandler的队列
-            if (this.messageHandler) {
-                console.log('清除消息队列...');
-                if (this.messageHandler.audioBase64Chunks) {
-                    this.messageHandler.audioBase64Chunks = [];
+            // 添加打断标记
+            if (this.messageQueues[this.currentQueueId].messageElement) {
+                try {
+                    const element = this.messageQueues[this.currentQueueId].messageElement;
+                    element.innerHTML += ' <span class="interrupt-indicator">[用户打断]</span>';
+                } catch (e) {
+                    console.error('添加打断标记时出错:', e);
                 }
             }
             
-            // 停止自动打字机
-            Typewriter.resetTypewriter();
-            
-            // 清除所有正在播放的音频
-            if (window.audioElements) {
-                window.audioElements.forEach(audio => {
-                    try {
-                        audio.pause();
-                        audio.remove();
-                    } catch (e) {
-                        console.error('停止音频元素时出错:', e);
-                    }
-                });
-                window.audioElements = [];
-            }
-            
-            // 清空所有活动的音频上下文节点
+            // 清除回放缓冲区，防止新的音频内容被回放
             try {
-                const audioNodes = document.querySelectorAll('.audio-node');
-                audioNodes.forEach(node => {
-                    if (node.audioContext) {
-                        node.audioContext.close();
-                    }
-                    node.remove();
-                });
+                if (this.audioSystem && typeof this.audioSystem.reset === 'function') {
+                    this.audioSystem.reset();
+                }
             } catch (e) {
-                console.error('清除音频节点时出错:', e);
+                console.error('重置音频系统时出错:', e);
             }
-        } catch (e) {
-            console.error('清除消息队列时出错:', e);
         }
         
-        // 2. 清除所有派生的请求
+        // 立即结束AI响应状态
+        this.isAiResponding = false;
+        
+        // 清除所有派生的请求
         if (window.activeRequests && window.activeRequests.length > 0) {
             try {
                 console.log('取消当前运行的请求...');
@@ -585,7 +658,7 @@ class VoiceChat {
             }
         }
         
-        // 3. 清除所有可能的EventSource连接
+        // 清除所有可能的EventSource连接
         if (this.eventSource) {
             try {
                 this.eventSource.close();
@@ -596,7 +669,7 @@ class VoiceChat {
         }
         
         // 清除所有相关的SSE连接
-        const allEventSources = document.querySelectorAll('.event-source-container, [data-event-source]');
+        const allEventSources = document.querySelectorAll('.event-source-container');
         if (allEventSources.length > 0) {
             allEventSources.forEach(container => {
                 try {
@@ -610,37 +683,23 @@ class VoiceChat {
             });
         }
         
+        // 清除Typewriter状态
+        try {
+            Typewriter.resetTypewriter();
+        } catch (e) {
+            console.error('重置Typewriter时出错:', e);
+        }
+        
         // 重置打断标志
         setTimeout(() => {
             this.isInterrupting = false;
-        }, 1000); // 给一些时间确保系统状态稳定
-        
-        // 添加打断指示到UI
-        try {
-            if (this.messageHandler.aiMessageElement) {
-                // 添加打断标签
-                this.messageHandler.aiMessageElement.innerHTML += ' <span class="interrupt-indicator">[用户打断]</span>';
-                
-                // 如果有打字机效果正在运行，强制结束它
-                if (Typewriter.getTypingBuffer && Typewriter.getTypingBuffer()) {
-                    // 强制清除打字机缓冲区
-                    const currentText = this.messageHandler.aiMessageElement.textContent || '';
-                    Typewriter.resetTypewriter();
-                    // 确保循环的文本保留，但停止新的文本添加
-                    this.messageHandler.aiMessageElement.textContent = currentText + ' [打断]';
-                }
-            }
             
-            // 重置当前状态以允许新的对话开始
-            console.log("AI响应成功被打断，准备新的对话");
-            setTimeout(() => {
-                if (this.isSessionActive && !this.isListening) {
-                    this.startListening();
-                }
-            }, 500);
-        } catch (e) {
-            console.error('更新UI时出错:', e);
-        }
+            // 打断后应立即开始新的录音
+            if (this.isSessionActive && !this.isListening) {
+                console.log('打断后开始新的录音会话');
+                this.startListening();
+            }
+        }, 800); // 给一些时间确保系统状态稳定
     }
     
     /**
