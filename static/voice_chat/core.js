@@ -5,6 +5,24 @@
  */
 class VoiceChat {
     /**
+     * 注入消息处理器
+     */
+    setMessageHandler(handler) {
+        this.messageHandler = handler;
+    }
+    /**
+     * 注入typewriter
+     */
+    setTypewriter(typewriter) {
+        this.typewriter = typewriter;
+    }
+    /**
+     * 注入音频流系统
+     */
+    setAudioSystem(audioSystem) {
+        this.audioSystem = audioSystem;
+    }
+    /**
      * 构造函数
      */
     constructor() {
@@ -186,58 +204,17 @@ class VoiceChat {
      * 处理服务器响应
      * @param {Object} response - 服务器响应
      */
+    // 已委托给 messageHandler
     handleResponse(response) {
         if (!this.isCallActive) return;
-        
-        // 创建标记，用于跟踪是否收到第一个响应块
-        let hasReceivedFirstChunk = false;
-        
-        // 绑定onComplete回调，用于AI回复结束后自动启动下一轮录音
-        const wrappedResponse = {
-            ...response,
-            // 接收每个响应块的回调
-            onChunk: (chunk) => {
-                // 如果这是第一个响应块，准备下一轮录音
-                if (!hasReceivedFirstChunk) {
-                    hasReceivedFirstChunk = true;
-                    console.log("收到AI的第一个响应块，准备下一轮录音");
-                    
-                    // 收到响应后的短暂延迟，避免太快开始新录音
-                    setTimeout(() => {
-                        if (this.isCallActive && this.waitingForAiResponse) {
-                            this.waitingForAiResponse = false;
-                            // 不立即启动录音，等待AI回复完成
-                        }
-                    }, 300);
-                }
-                
-                // 调用原始onChunk如果存在
-                if (response.onChunk) {
-                    response.onChunk(chunk);
-                }
-            },
-            // AI回复完成后的回调
-            onComplete: async () => {
-                console.log("AI回复完成，准备下一轮录音");
-                
+        if (this.messageHandler) {
+            // 让 messageHandler 处理AI回复（需适配音频流/打字机）
+            this.messageHandler.handleAiResponse(response, async () => {
                 if (this.isCallActive) {
-                    // 短暂延迟，让用户有时间反应
-                    setTimeout(async () => {
-                        if (this.isCallActive) {
-                            await this.startNewRecording();
-                        }
-                    }, 800); // 增加延迟，给用户更多反应时间
+                    await this.startNewRecording();
                 }
-                
-                // 调用原始onComplete如果存在
-                if (response.onComplete) {
-                    response.onComplete();
-                }
-            }
-        };
-        
-        // 使用录音对话功能处理响应（播放语音等）
-        this.audioRecorder.handleResponse(wrappedResponse);
+            });
+        }
     }
     
     /**
@@ -527,33 +504,34 @@ class VoiceChat {
      * @param {string} text - 显示的文本
      * @param {boolean} isComplete - 是否为最终文本
      */
+    // 已委托给 typewriter
     updateTypewriterEffect(text, isComplete = false) {
-        if (!this.typewriterContainer) return;
-        
-        // 直接更新文本
-        this.typewriterContainer.textContent = text;
-        
-        // 滚动到最新消息
-        this.scrollToLatestMessage();
+        if (this.typewriter && typeof this.typewriter.addToTypingBuffer === 'function') {
+            this.typewriter.addToTypingBuffer(text, false);
+            // 这里可以根据 isComplete 调用 finalizeTypewriter
+            if (isComplete && typeof this.typewriter.finalizeTypewriter === 'function') {
+                this.typewriter.finalizeTypewriter();
+            }
+        }
     }
     
     /**
      * 完成打字机效果
      */
+    // 已委托给 typewriter
     completeTypewriterEffect() {
-        if (this.typewriterContainer && this.textBuffer) {
-            this.typewriterContainer.textContent = this.textBuffer;
-            this.scrollToLatestMessage();
+        if (this.typewriter && typeof this.typewriter.finalizeTypewriter === 'function') {
+            this.typewriter.finalizeTypewriter();
         }
     }
     
     /**
      * 滚动到最新消息
      */
+    // 已委托给 messageHandler
     scrollToLatestMessage() {
-        const chatContainer = document.getElementById('chat-messages');
-        if (chatContainer) {
-            chatContainer.scrollTop = chatContainer.scrollHeight;
+        if (this.messageHandler && typeof this.messageHandler.scrollToLatestMessage === 'function') {
+            this.messageHandler.scrollToLatestMessage();
         }
     }
     
@@ -599,11 +577,15 @@ class VoiceChat {
      * 播放音频块
      * @param {string} base64Audio - Base64编码的音频数据
      */
+    // 已委托给 audioSystem
     playAudioChunk(base64Audio) {
+        if (this.audioSystem && typeof this.audioSystem.addAudioChunk === 'function') {
+            this.audioSystem.addAudioChunk(base64Audio);
+            return;
+        }
         try {
             // 清理base64前缀
             const cleanBase64 = base64Audio.replace(/^data:audio\/[^;]+;base64,/, '');
-            
             // 解码base64
             const binaryString = atob(cleanBase64);
             const bytes = new Uint8Array(binaryString.length);
@@ -633,9 +615,9 @@ class VoiceChat {
                 }
             });
             
-        } catch (error) {
-            console.error('处理音频数据失败:', error);
-        }
+            } catch (error) {
+                console.error('处理音频数据失败:', error);
+            }
     }
     
     /**
@@ -716,20 +698,11 @@ class VoiceChat {
     /**
      * 添加消息到聊天界面
      */
+    // 已委托给 messageHandler
     addMessage(sender, content, type) {
-        // 防止添加空消息或占位消息
-        if (!content || content === "请说些什么，我在听。" || content === "[语音输入]" && type !== 'user') {
-            return;
+        if (this.messageHandler) {
+            this.messageHandler.appendMessage(content, type === 'user' ? 'user' : (type === 'ai' ? 'ai' : 'system'));
         }
-        
-        // 创建消息元素
-        this.createMessageElement(sender, content, type);
-        
-        // 使用事件通知UI更新
-        const event = new CustomEvent('voice-chat-message', {
-            detail: { sender, content, type }
-        });
-        document.dispatchEvent(event);
     }
     
     /**
