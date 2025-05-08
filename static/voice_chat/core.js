@@ -517,7 +517,59 @@ class VoiceChat {
         // 立即结束AI响应状态
         this.isAiResponding = false;
         
-        // 清除所有派生的请求
+        // 1. 清除消息队列 - 找到并访问相关对象
+        try {
+            // 清除AudioSystem的所有音频片段
+            if (this.audioSystem) {
+                console.log('清除音频队列...');
+                this.audioSystem.reset(); // 重置音频系统
+                this.audioSystem.audioQueue = []; // 清空队列
+                this.audioSystem.hasNewChunks = false; // 重置状态
+                this.audioSystem.isProcessing = false;
+                this.audioSystem.isPlaying = false;
+            }
+            
+            // 清除MessageHandler的队列
+            if (this.messageHandler) {
+                console.log('清除消息队列...');
+                if (this.messageHandler.audioBase64Chunks) {
+                    this.messageHandler.audioBase64Chunks = [];
+                }
+            }
+            
+            // 停止自动打字机
+            Typewriter.resetTypewriter();
+            
+            // 清除所有正在播放的音频
+            if (window.audioElements) {
+                window.audioElements.forEach(audio => {
+                    try {
+                        audio.pause();
+                        audio.remove();
+                    } catch (e) {
+                        console.error('停止音频元素时出错:', e);
+                    }
+                });
+                window.audioElements = [];
+            }
+            
+            // 清空所有活动的音频上下文节点
+            try {
+                const audioNodes = document.querySelectorAll('.audio-node');
+                audioNodes.forEach(node => {
+                    if (node.audioContext) {
+                        node.audioContext.close();
+                    }
+                    node.remove();
+                });
+            } catch (e) {
+                console.error('清除音频节点时出错:', e);
+            }
+        } catch (e) {
+            console.error('清除消息队列时出错:', e);
+        }
+        
+        // 2. 清除所有派生的请求
         if (window.activeRequests && window.activeRequests.length > 0) {
             try {
                 console.log('取消当前运行的请求...');
@@ -533,7 +585,7 @@ class VoiceChat {
             }
         }
         
-        // 清除所有可能的EventSource连接
+        // 3. 清除所有可能的EventSource连接
         if (this.eventSource) {
             try {
                 this.eventSource.close();
@@ -544,7 +596,7 @@ class VoiceChat {
         }
         
         // 清除所有相关的SSE连接
-        const allEventSources = document.querySelectorAll('.event-source-container');
+        const allEventSources = document.querySelectorAll('.event-source-container, [data-event-source]');
         if (allEventSources.length > 0) {
             allEventSources.forEach(container => {
                 try {
@@ -566,20 +618,26 @@ class VoiceChat {
         // 添加打断指示到UI
         try {
             if (this.messageHandler.aiMessageElement) {
+                // 添加打断标签
                 this.messageHandler.aiMessageElement.innerHTML += ' <span class="interrupt-indicator">[用户打断]</span>';
+                
+                // 如果有打字机效果正在运行，强制结束它
+                if (Typewriter.getTypingBuffer && Typewriter.getTypingBuffer()) {
+                    // 强制清除打字机缓冲区
+                    const currentText = this.messageHandler.aiMessageElement.textContent || '';
+                    Typewriter.resetTypewriter();
+                    // 确保循环的文本保留，但停止新的文本添加
+                    this.messageHandler.aiMessageElement.textContent = currentText + ' [打断]';
+                }
             }
             
-            // 完成打字机效果
-            Typewriter.finalizeTypewriter(() => {
-                console.log("AI响应成功被打断");
-                
-                // 重置当前状态以允许新的对话开始
-                setTimeout(() => {
-                    if (this.isSessionActive && !this.isListening) {
-                        this.startListening();
-                    }
-                }, 500);
-            });
+            // 重置当前状态以允许新的对话开始
+            console.log("AI响应成功被打断，准备新的对话");
+            setTimeout(() => {
+                if (this.isSessionActive && !this.isListening) {
+                    this.startListening();
+                }
+            }, 500);
         } catch (e) {
             console.error('更新UI时出错:', e);
         }
