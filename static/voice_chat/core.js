@@ -246,10 +246,22 @@ class VoiceChat {
                 return; // 直接返回，不发送请求
             }
             
+            // 在应用级别创建AbortController管理
+            if (!window.activeRequests) {
+                window.activeRequests = [];
+            }
+            
+            // 创建AbortController来支持请求取消
+            const controller = new AbortController();
+            const signal = controller.signal;
+            
+            // 将这个控制器添加到全局列表中，使其可以在打断时被取消
+            window.activeRequests.push(controller);
+            
             // 将Blob转换为Base64
             const base64Audio = await this.blobToBase64(audioBlob);
             
-            // 直接使用/api/chat接口发送音频数据
+            // 直接使用/api/chat接口发送音频数据，使用AbortSignal
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: {
@@ -258,8 +270,15 @@ class VoiceChat {
                 body: JSON.stringify({
                     audio: base64Audio,
                     session_id: this.sessionId
-                })
+                }),
+                signal: signal // 使用AbortSignal来支持取消
             });
+            
+            // 请求完成后从活动请求列表中移除
+            const index = window.activeRequests.indexOf(controller);
+            if (index > -1) {
+                window.activeRequests.splice(index, 1);
+            }
             
             if (!response.ok) {
                 throw new Error(`服务器响应错误: ${response.status}`);
@@ -273,13 +292,15 @@ class VoiceChat {
             // 不需要再添加用户消息，sendMessage会处理
             this.messageHandler.sendMessage('', base64Audio);
             
-            // 添加一个监听器，当收到第一个响应时启动新的录音
-            // 以支持打断功能
+            // 使用更可靠的方式添加监听器，以支持打断功能
+            // 在首次响应到达后启动新的录音
+            // 使用定时器而不是SSE监听，因为这更稳定
             setTimeout(() => {
-                if (this.isSessionActive && !this.isListening) {
+                if (this.isSessionActive && !this.isListening && this.isAiResponding) {
+                    console.log('已收到AI响应，开启录音以支持打断');
                     this.startListening();
                 }
-            }, 2000); // 等待一段时间后重新开始监听
+            }, 1500); // 约荃1.5秒后开始录音，这个时间应该足以收到第一个响应
         } catch (error) {
             console.error("处理录音时出错:", error);
             this.messageHandler.appendMessage("⚠️ 处理录音时出错，请重试", "system");
@@ -496,6 +517,22 @@ class VoiceChat {
         // 立即结束AI响应状态
         this.isAiResponding = false;
         
+        // 清除所有派生的请求
+        if (window.activeRequests && window.activeRequests.length > 0) {
+            try {
+                console.log('取消当前运行的请求...');
+                // 如果有AbortController，试图使用它来取消请求
+                window.activeRequests.forEach(controller => {
+                    if (controller && typeof controller.abort === 'function') {
+                        controller.abort();
+                    }
+                });
+                window.activeRequests = [];
+            } catch (e) {
+                console.error('取消请求时出错:', e);
+            }
+        }
+        
         // 清除所有可能的EventSource连接
         if (this.eventSource) {
             try {
@@ -506,29 +543,27 @@ class VoiceChat {
             }
         }
         
-        // 向服务器发送打断请求
-        fetch('/api/interrupt', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                session_id: this.sessionId
-            })
-        }).then(response => {
-            if (!response.ok) {
-                console.error("打断请求失败:", response.status);
-            }
-        }).catch(error => {
-            console.error("发送打断请求时出错:", error);
-        }).finally(() => {
-            // 无论成功失败，都要重置打断标志
-            setTimeout(() => {
-                this.isInterrupting = false;
-            }, 1000); // 给服务器一些时间处理打断
-        });
+        // 清除所有相关的SSE连接
+        const allEventSources = document.querySelectorAll('.event-source-container');
+        if (allEventSources.length > 0) {
+            allEventSources.forEach(container => {
+                try {
+                    if (container.eventSource) {
+                        container.eventSource.close();
+                    }
+                    container.remove();
+                } catch (e) {
+                    console.error('关闭附加EventSource时出错:', e);
+                }
+            });
+        }
         
-        // 添加打断指示
+        // 重置打断标志
+        setTimeout(() => {
+            this.isInterrupting = false;
+        }, 1000); // 给一些时间确保系统状态稳定
+        
+        // 添加打断指示到UI
         try {
             if (this.messageHandler.aiMessageElement) {
                 this.messageHandler.aiMessageElement.innerHTML += ' <span class="interrupt-indicator">[用户打断]</span>';
@@ -537,6 +572,13 @@ class VoiceChat {
             // 完成打字机效果
             Typewriter.finalizeTypewriter(() => {
                 console.log("AI响应成功被打断");
+                
+                // 重置当前状态以允许新的对话开始
+                setTimeout(() => {
+                    if (this.isSessionActive && !this.isListening) {
+                        this.startListening();
+                    }
+                }, 500);
             });
         } catch (e) {
             console.error('更新UI时出错:', e);
