@@ -1,27 +1,9 @@
 /**
  * 实时语音通话功能 - 核心模块
  * 提供语音通话的核心功能和状态管理
- * 基于录音对话功能，实现连续对话
+ * 基于录音对话功能，实现连续对话和中断功能
  */
 class VoiceChat {
-    /**
-     * 注入消息处理器
-     */
-    setMessageHandler(handler) {
-        this.messageHandler = handler;
-    }
-    /**
-     * 注入typewriter
-     */
-    setTypewriter(typewriter) {
-        this.typewriter = typewriter;
-    }
-    /**
-     * 注入音频流系统
-     */
-    setAudioSystem(audioSystem) {
-        this.audioSystem = audioSystem;
-    }
     /**
      * 构造函数
      */
@@ -31,6 +13,8 @@ class VoiceChat {
         this.sessionId = null;         // 会话ID
         this.waitingForAiResponse = false; // 是否等待AI响应
         this.isSpeaking = false;       // 用户是否正在说话
+        this.isAiSpeaking = false;     // AI是否正在回复中
+        this.interruptMode = false;    // 是否处于中断监听模式
         
         // 语音活动检测（VAD）相关
         this.silenceTimer = null;      // 静音计时器
@@ -44,6 +28,7 @@ class VoiceChat {
         this.audioChunks = []; // 音频块缓存
         this.typewriterActive = false; // 打字机效果是否激活
         this.firstResponseReceived = false; // 是否收到第一个响应
+        this.streamController = null;  // 流控制器，用于中断流式响应
         
         // 引用录音对话功能实例
         this.audioRecorder = null;     // 录音对话功能的实例引用
@@ -53,6 +38,7 @@ class VoiceChat {
         
         // 绑定事件处理方法
         this.handleStreamResponse = this.handleStreamResponse.bind(this);
+        this.handleInterruptDetection = this.handleInterruptDetection.bind(this);
     }
     
     /**
@@ -108,6 +94,8 @@ class VoiceChat {
             
             // 2. 更新状态
             this.isCallActive = true;
+            this.isAiSpeaking = false;
+            this.interruptMode = false;
             
             // 3. 更新UI
             this.updateUIForCallStart();
@@ -149,16 +137,27 @@ class VoiceChat {
             }
             
             // 使用录音对话功能的启动录音方法
-            // 我们需要覆盖原有的录音完成回调，使其自动处理连续对话
-            await this.audioRecorder.startRecording(
-                // 结束录音时的自定义回调
-                (audioBlob) => this.handleRecordingComplete(audioBlob),
-                // VAD检测的自定义回调 
-                (audioLevel) => this.handleVoiceActivity(audioLevel)
-            );
-            
-            console.log("录音已成功启动");
-            this.updateStatus('您可以开始说话');
+            // 如果处于中断模式，使用中断检测回调
+            if (this.interruptMode && this.isAiSpeaking) {
+                await this.audioRecorder.startRecording(
+                    // 结束录音时的自定义回调
+                    (audioBlob) => this.handleRecordingComplete(audioBlob),
+                    // 使用中断检测回调
+                    (audioLevel) => this.handleInterruptDetection(audioLevel)
+                );
+                console.log("录音已启动 (中断检测模式)");
+                this.updateStatus('AI正在回复，您可以随时打断');
+            } else {
+                // 正常录音模式
+                await this.audioRecorder.startRecording(
+                    // 结束录音时的自定义回调
+                    (audioBlob) => this.handleRecordingComplete(audioBlob),
+                    // VAD检测的自定义回调 
+                    (audioLevel) => this.handleVoiceActivity(audioLevel)
+                );
+                console.log("录音已成功启动 (正常模式)");
+                this.updateStatus('您可以开始说话');
+            }
             
         } catch (error) {
             console.error("启动录音失败:", error);
@@ -175,6 +174,85 @@ class VoiceChat {
     }
     
     /**
+     * 处理中断检测
+     * @param {number} audioLevel - 音频电平值
+     */
+    handleInterruptDetection(audioLevel) {
+        // 设置中断阈值，相对较高
+        const interruptThreshold = 0.03;
+        
+        // 判断当前帧是否足够强烈来中断
+        if (audioLevel > interruptThreshold) {
+            this.consecutiveSpeakingFrames = (this.consecutiveSpeakingFrames || 0) + 1;
+            
+            // 如果连续多帧检测到超过阈值的声音，判定为中断
+            if (this.consecutiveSpeakingFrames >= 5 && this.isAiSpeaking) {  // 需要多一些帧确保不是噪声
+                console.log("检测到用户中断！，音量级别:", audioLevel);
+                
+                // 立即停止AI回复
+                this.interruptAiResponse();
+                
+                // 标记用户开始说话
+                this.isSpeaking = true;
+                this.updateStatus('您已打断 AI 回复');
+                this.updateVoiceIndicator(true, audioLevel);
+            }
+        } else {
+            // 重置连续检测计数器
+            this.consecutiveSpeakingFrames = 0;
+            
+            // 持续更新音量指示器
+            if (this.isSpeaking) {
+                this.updateVoiceIndicator(true, audioLevel);
+            }
+        }
+    }
+    
+    /**
+     * 中断 AI 响应
+     */
+    interruptAiResponse() {
+        if (!this.isAiSpeaking) return;
+        
+        console.log("正在中断 AI 响应");
+        
+        // 1. 停止流返回如果可能
+        if (this.streamController && typeof this.streamController.abort === 'function') {
+            this.streamController.abort();
+            this.streamController = null;
+        }
+        
+        // 2. 更新相关状态
+        this.isAiSpeaking = false;
+        this.interruptMode = false;
+        
+        // 3. 结束当前消息的打字机效果
+        if (this.typewriterActive) {
+            this.completeTypewriterEffect();
+        }
+        
+        // 4. 添加中断提示
+        if (this.currentMessageElement) {
+            const interruptNote = document.createElement('span');
+            interruptNote.className = 'interrupt-note';
+            interruptNote.textContent = ' (已被打断)';
+            this.currentMessageElement.appendChild(interruptNote);
+            this.currentMessageElement = null;
+        }
+        
+        // 5. 重新开始正常录音模式
+        setTimeout(() => {
+            if (this.isCallActive) {
+                // 停止当前录音并重新开始正常模式的录音
+                this.audioRecorder.stopRecording();
+                this.interruptMode = false;
+                this.isSpeaking = true; // 已经在说话了
+                this.autoStopAndSendRecording(); // 自动开始处理这个新的输入
+            }
+        }, 100);
+    }
+    
+    /**
      * 处理录音完成事件
      * @param {Blob} audioBlob - 录音数据
      */
@@ -186,13 +264,12 @@ class VoiceChat {
         this.updateStatus("正在处理您的语音...");
         
         try {
-            // 只负责转base64，不直接请求
-            const base64Audio = await this.audioRecorder.blobToBase64(audioBlob);
-            // 通过messageHandler流式发送和处理
-            if (this.messageHandler) {
-                await this.messageHandler.sendMessage('', base64Audio);
-            }
-            this.waitingForAiResponse = false;
+            // 使用录音对话功能处理音频并发送
+            const response = await this.audioRecorder.processAudioAndSend(audioBlob, this.sessionId);
+            
+            // 处理响应，但重写响应处理逻辑，使其完成后自动启动下一轮录音
+            this.handleResponse(response);
+            
         } catch (error) {
             console.error("处理录音失败:", error);
             this.updateStatus("处理失败，正在重新启动录音");
@@ -205,17 +282,58 @@ class VoiceChat {
      * 处理服务器响应
      * @param {Object} response - 服务器响应
      */
-    // 已委托给 messageHandler
     handleResponse(response) {
         if (!this.isCallActive) return;
-        if (this.messageHandler) {
-            // 让 messageHandler 处理AI回复（需适配音频流/打字机）
-            this.messageHandler.handleAiResponse(response, async () => {
-                if (this.isCallActive) {
-                    await this.startNewRecording();
+        
+        // 创建标记，用于跟踪是否收到第一个响应块
+        let hasReceivedFirstChunk = false;
+        
+        // 绑定onComplete回调，用于AI回复结束后自动启动下一轮录音
+        const wrappedResponse = {
+            ...response,
+            // 接收每个响应块的回调
+            onChunk: (chunk) => {
+                // 如果这是第一个响应块，准备下一轮录音
+                if (!hasReceivedFirstChunk) {
+                    hasReceivedFirstChunk = true;
+                    console.log("收到AI的第一个响应块，准备下一轮录音");
+                    
+                    // 收到响应后的短暂延迟，避免太快开始新录音
+                    setTimeout(() => {
+                        if (this.isCallActive && this.waitingForAiResponse) {
+                            this.waitingForAiResponse = false;
+                            // 不立即启动录音，等待AI回复完成
+                        }
+                    }, 300);
                 }
-            });
-        }
+                
+                // 调用原始onChunk如果存在
+                if (response.onChunk) {
+                    response.onChunk(chunk);
+                }
+            },
+            // AI回复完成后的回调
+            onComplete: async () => {
+                console.log("AI回复完成，准备下一轮录音");
+                
+                if (this.isCallActive) {
+                    // 短暂延迟，让用户有时间反应
+                    setTimeout(async () => {
+                        if (this.isCallActive) {
+                            await this.startNewRecording();
+                        }
+                    }, 800); // 增加延迟，给用户更多反应时间
+                }
+                
+                // 调用原始onComplete如果存在
+                if (response.onComplete) {
+                    response.onComplete();
+                }
+            }
+        };
+        
+        // 使用录音对话功能处理响应（播放语音等）
+        this.audioRecorder.handleResponse(wrappedResponse);
     }
     
     /**
@@ -321,6 +439,10 @@ class VoiceChat {
         try {
             console.log("自动停止录音并处理");
             
+            // 重置相关状态
+            this.interruptMode = false;
+            this.isSpeaking = false;
+            
             // 停止录音并获取音频数据
             const audioBlob = await this.audioRecorder.stopRecording();
             
@@ -328,24 +450,42 @@ class VoiceChat {
                 // 设置等待状态
                 this.waitingForAiResponse = true;
                 this.updateStatus("正在处理您的语音...");
+                
                 // 添加用户消息到聊天界面
                 this.addMessage('您', '[语音输入]', 'user');
+                
                 try {
-                    // 先转base64
-                    const base64Audio = await this.audioRecorder.blobToBase64(audioBlob);
-                    // 通过messageHandler流式发送和处理
-                    if (this.messageHandler) {
-                        await this.messageHandler.sendMessage('', base64Audio);
+                    // 将 audioBlob 转换为 base64
+                    const base64Audio = await this.blobToBase64(audioBlob);
+                    
+                    // 处理并发送音频
+                    const response = await fetch('/api/voice-chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            audio: base64Audio,
+                            session_id: this.sessionId
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`服务器响应错误: ${response.status}`);
                     }
-                    this.waitingForAiResponse = false;
+                    
+                    // 处理流式响应 - 这将自动启动中断检测模式
+                    await this.handleStreamResponse(response);
+                    
                     // 处理完成后，如果通话仍然活跃，开始新的录音
-                    if (this.isCallActive) {
+                    if (this.isCallActive && !this.interruptMode) {
                         setTimeout(() => {
-                            if (this.isCallActive) {
+                            if (this.isCallActive && !this.isSpeaking && !this.waitingForAiResponse) {
                                 this.startNewRecording();
                             }
                         }, 800);
                     }
+                    
                 } catch (error) {
                     console.error("处理录音失败:", error);
                     this.updateStatus("处理失败，正在重新启动录音");
@@ -353,7 +493,7 @@ class VoiceChat {
                     
                     // 短暂延迟后重新开始录音
                     setTimeout(() => {
-                        if (this.isCallActive) {
+                        if (this.isCallActive && !this.isSpeaking) {
                             this.startNewRecording();
                         }
                     }, 1000);
@@ -368,11 +508,25 @@ class VoiceChat {
             
             // 短暂延迟后重新开始录音
             setTimeout(() => {
-                if (this.isCallActive) {
+                if (this.isCallActive && !this.isSpeaking) {
                     this.startNewRecording();
                 }
             }, 1000);
         }
+    }
+    
+    /**
+     * 将Blob转换为Base64格式
+     * @param {Blob} blob - 音频blob
+     * @returns {Promise<string>} - Base64字符串
+     */
+    blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
     }
     
     /**
@@ -396,94 +550,147 @@ class VoiceChat {
         // 重置状态
         this.textBuffer = '';
         this.audioChunks = [];
-        this.typewriterActive = false;
+        this.typewriterActive = true;
         this.firstResponseReceived = false;
+        this.isAiSpeaking = true;
         
-        // 读取流
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // 创建可中断的控制器
+        this.streamController = new AbortController();
+        const signal = this.streamController.signal;
         
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        try {
+            // 读取流
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
             
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n\n');
-            buffer = lines.pop() || '';
+            // 收到第一个响应后，激活中断检测模式
+            const activateInterruptMode = () => {
+                if (!this.firstResponseReceived && this.isCallActive) {
+                    this.firstResponseReceived = true;
+                    this.waitingForAiResponse = false;
+                    this.interruptMode = true;
+                    
+                    // 开始中断模式的录音检测
+                    console.log("激活中断检测模式");
+                    this.startNewRecording(); // 这将使用中断检测回调
+                }
+            };
             
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const jsonStr = line.substring(5).trim();
-                        const data = JSON.parse(jsonStr);
-                        
-                        // 根据数据类型处理
-                        if (data.type === 'text' && data.content) {
-                            // 文本响应
-                            if (!this.firstResponseReceived) {
-                                this.firstResponseReceived = true;
-                                this.waitingForAiResponse = false;
-                            }
+            // 检查信号是否已中止
+            const checkSignal = () => {
+                if (signal.aborted) {
+                    throw new DOMException('Stream aborted by user', 'AbortError');
+                }
+            };
+            
+            while (true) {
+                checkSignal(); // 每次循环检查信号
+                
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop() || '';
+                
+                for (const line of lines) {
+                    checkSignal(); // 处理每行前检查
+                    
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const jsonStr = line.substring(5).trim();
+                            const data = JSON.parse(jsonStr);
                             
-                            this.textBuffer += data.content;
-                            this.updateTypewriterEffect(this.textBuffer);
-                        } 
-                        else if (data.type === 'audio' && data.content) {
-                            // 音频响应
-                            if (!this.firstResponseReceived) {
-                                this.firstResponseReceived = true;
-                                this.waitingForAiResponse = false;
-                            }
-                            
-                            // 播放音频
-                            this.playAudioChunk(data.content);
-                        }
-                        else if (data.type === 'transcript' && data.content) {
-                            // 转录内容
-                            console.log("转录:", data.content);
-                            if (!this.textBuffer.startsWith('"')) {
-                                this.textBuffer = `"${data.content}`;
-                            } else {
-                                // 追加转录内容
+                            // 根据数据类型处理
+                            if (data.type === 'text' && data.content) {
+                                // 文本响应 - 激活中断模式
+                                activateInterruptMode();
+                                
                                 this.textBuffer += data.content;
+                                this.updateTypewriterEffect(this.textBuffer);
+                            } 
+                            else if (data.type === 'audio' && data.content) {
+                                // 音频响应 - 激活中断模式
+                                activateInterruptMode();
+                                
+                                // 播放音频
+                                this.playAudioChunk(data.content);
                             }
-                            this.updateTypewriterEffect(this.textBuffer);
-                        }
-                        else if (data.type === 'error') {
-                            // 错误处理
-                            console.error("服务器错误:", data.content);
-                            this.updateStatus(`错误: ${data.content}`);
-                            if (this.currentMessageElement) {
-                                const errorSpan = document.createElement('span');
-                                errorSpan.className = 'error-text';
-                                errorSpan.textContent = `错误: ${data.content}`;
-                                this.currentMessageElement.appendChild(errorSpan);
+                            else if (data.type === 'transcript' && data.content) {
+                                // 转录内容
+                                activateInterruptMode();
+                                
+                                console.log("转录:", data.content);
+                                if (!this.textBuffer.startsWith('"')) {
+                                    this.textBuffer = `"${data.content}`;
+                                } else {
+                                    // 追加转录内容
+                                    this.textBuffer += data.content;
+                                }
+                                this.updateTypewriterEffect(this.textBuffer);
                             }
+                            else if (data.type === 'error') {
+                                // 错误处理
+                                console.error("服务器错误:", data.content);
+                                this.updateStatus(`错误: ${data.content}`);
+                                if (this.currentMessageElement) {
+                                    const errorSpan = document.createElement('span');
+                                    errorSpan.className = 'error-text';
+                                    errorSpan.textContent = `错误: ${data.content}`;
+                                    this.currentMessageElement.appendChild(errorSpan);
+                                }
+                            }
+                        } catch (e) {
+                            console.error("解析SSE数据错误:", e, line);
                         }
-                    } catch (e) {
-                        console.error("解析SSE数据错误:", e, line);
                     }
                 }
             }
-        }
-        
-        // 流结束处理
-        if (this.textBuffer) {
-            // 如果是转录消息，添加右引号
-            if (this.textBuffer.startsWith('"') && !this.textBuffer.endsWith('"')) {
-                this.textBuffer += '"';
-                this.updateTypewriterEffect(this.textBuffer, true);
+            
+            // 流正常结束处理
+            if (this.textBuffer) {
+                // 如果是转录消息，添加右引号
+                if (this.textBuffer.startsWith('"') && !this.textBuffer.endsWith('"')) {
+                    this.textBuffer += '"';
+                    this.updateTypewriterEffect(this.textBuffer, true);
+                }
+                
+                // 完成打字效果
+                this.completeTypewriterEffect();
             }
             
-            // 完成打字效果
-            this.completeTypewriterEffect();
+        } catch (error) {
+            // 检查是否是用户中断
+            if (error.name === 'AbortError') {
+                console.log('流被用户中断');
+                // 中断已由interruptAiResponse函数处理
+            } else {
+                // 其他错误
+                console.error('处理流响应错误:', error);
+                this.updateStatus(`错误: ${error.message}`);
+            }
+        } finally {
+            // 清理状态
+            this.isAiSpeaking = false;
+            this.typewriterActive = false;
+            this.streamController = null;
+            
+            // 如果还在中断模式但未中断，返回到正常模式
+            if (this.interruptMode && this.isCallActive && !this.isSpeaking) {
+                this.interruptMode = false;
+                setTimeout(() => {
+                    if (this.isCallActive && !this.isSpeaking && !this.waitingForAiResponse) {
+                        this.startNewRecording();
+                    }
+                }, 800);
+            }
+            
+            // 重置当前消息元素
+            setTimeout(() => {
+                this.currentMessageElement = null;
+            }, 500);
         }
-        
-        // 重置当前消息元素
-        setTimeout(() => {
-            this.currentMessageElement = null;
-        }, 500);
         
         // 返回处理完成的文本
         return this.textBuffer;
@@ -494,34 +701,33 @@ class VoiceChat {
      * @param {string} text - 显示的文本
      * @param {boolean} isComplete - 是否为最终文本
      */
-    // 已委托给 typewriter
     updateTypewriterEffect(text, isComplete = false) {
-        if (this.typewriter && typeof this.typewriter.addToTypingBuffer === 'function') {
-            this.typewriter.addToTypingBuffer(text, false);
-            // 这里可以根据 isComplete 调用 finalizeTypewriter
-            if (isComplete && typeof this.typewriter.finalizeTypewriter === 'function') {
-                this.typewriter.finalizeTypewriter();
-            }
-        }
+        if (!this.typewriterContainer) return;
+        
+        // 直接更新文本
+        this.typewriterContainer.textContent = text;
+        
+        // 滚动到最新消息
+        this.scrollToLatestMessage();
     }
     
     /**
      * 完成打字机效果
      */
-    // 已委托给 typewriter
     completeTypewriterEffect() {
-        if (this.typewriter && typeof this.typewriter.finalizeTypewriter === 'function') {
-            this.typewriter.finalizeTypewriter();
+        if (this.typewriterContainer && this.textBuffer) {
+            this.typewriterContainer.textContent = this.textBuffer;
+            this.scrollToLatestMessage();
         }
     }
     
     /**
      * 滚动到最新消息
      */
-    // 已委托给 messageHandler
     scrollToLatestMessage() {
-        if (this.messageHandler && typeof this.messageHandler.scrollToLatestMessage === 'function') {
-            this.messageHandler.scrollToLatestMessage();
+        const chatContainer = document.getElementById('chat-messages');
+        if (chatContainer) {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
         }
     }
     
@@ -567,15 +773,11 @@ class VoiceChat {
      * 播放音频块
      * @param {string} base64Audio - Base64编码的音频数据
      */
-    // 已委托给 audioSystem
     playAudioChunk(base64Audio) {
-        if (this.audioSystem && typeof this.audioSystem.addAudioChunk === 'function') {
-            this.audioSystem.addAudioChunk(base64Audio);
-            return;
-        }
         try {
             // 清理base64前缀
             const cleanBase64 = base64Audio.replace(/^data:audio\/[^;]+;base64,/, '');
+            
             // 解码base64
             const binaryString = atob(cleanBase64);
             const bytes = new Uint8Array(binaryString.length);
@@ -605,9 +807,9 @@ class VoiceChat {
                 }
             });
             
-            } catch (error) {
-                console.error('处理音频数据失败:', error);
-            }
+        } catch (error) {
+            console.error('处理音频数据失败:', error);
+        }
     }
     
     /**
@@ -623,6 +825,14 @@ class VoiceChat {
             // 1. 立即更新状态，防止后续操作
             this.isCallActive = false;
             this.isSpeaking = false;
+            this.isAiSpeaking = false;
+            this.interruptMode = false;
+            
+            // 如果存在流控制器，中止流
+            if (this.streamController && typeof this.streamController.abort === 'function') {
+                this.streamController.abort();
+                this.streamController = null;
+            }
             
             // 清除所有计时器
             if (this.silenceTimer) {
@@ -651,7 +861,12 @@ class VoiceChat {
             this.updateUIForCallEnd();
             this.updateStatus('通话已结束');
             
-            // 7. 添加会话结束提示
+            // 7. 结束当前消息的打字机效果
+            if (this.typewriterActive) {
+                this.completeTypewriterEffect();
+            }
+            
+            // 8. 添加会话结束提示
             this.addMessage('系统', '通话已结束', 'system');
             
         } catch (error) {
@@ -688,11 +903,20 @@ class VoiceChat {
     /**
      * 添加消息到聊天界面
      */
-    // 已委托给 messageHandler
     addMessage(sender, content, type) {
-        if (this.messageHandler) {
-            this.messageHandler.appendMessage(content, type === 'user' ? 'user' : (type === 'ai' ? 'ai' : 'system'));
+        // 防止添加空消息或占位消息
+        if (!content || content === "请说些什么，我在听。" || content === "[语音输入]" && type !== 'user') {
+            return;
         }
+        
+        // 创建消息元素
+        this.createMessageElement(sender, content, type);
+        
+        // 使用事件通知UI更新
+        const event = new CustomEvent('voice-chat-message', {
+            detail: { sender, content, type }
+        });
+        document.dispatchEvent(event);
     }
     
     /**

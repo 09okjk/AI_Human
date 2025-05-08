@@ -4,7 +4,6 @@
 
 // 导入必要的模块
 import VoiceChat from './core.js';
-import '../voice_chat/inject_js_dependencies.js'; // 注入js依赖
 
 // 等待DOM加载完成
 document.addEventListener('DOMContentLoaded', () => {
@@ -44,12 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 初始化语音通话功能
             const voiceChat = new VoiceChat();
             voiceChat.setAudioRecorder(audioRecorder);
-            // 注入js/message-handler.js等依赖
-            if (window.voiceChatMessageHandler && window.voiceChatTypewriter && window.voiceChatAudioSystem) {
-                voiceChat.setMessageHandler(window.voiceChatMessageHandler);
-                voiceChat.setTypewriter(window.voiceChatTypewriter);
-                voiceChat.setAudioSystem(window.voiceChatAudioSystem);
-            }
+            
             // 保存到全局
             window.voiceChat = voiceChat;
             window.audioRecorder = audioRecorder;
