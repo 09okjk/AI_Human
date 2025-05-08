@@ -192,13 +192,31 @@ class VoiceChat {
      */
     onAudioLevelChange(level) {
         // 如果检测到明显的声音活动，重置静音检测
-        if (level > 0.05) { // 可以调整这个阈值
+        if (level > 0.07) { // 增加了阈值，更加防止偶发噪音触发打断
             this.resetSilenceTimer();
             
             // 如果AI正在回复，检测到用户开始说话，就打断AI的回复
             if (this.isAiResponding) {
-                console.log("检测到用户打断，停止AI回复...");
-                this.interruptAiResponse();
+                // 增加连续高音量的校验，保证确实是用户说话而不是噪音
+                // 使用渐进counter模式，防止类似湿声导致的误触发
+                if (!this.interruptCounter) this.interruptCounter = 0;
+                this.interruptCounter++;
+                
+                // 如果检测到连续3次以上的高音量，则认为是有效打断
+                if (this.interruptCounter >= 3) {
+                    console.log("检测到用户打断，停止AI回复...");
+                    this.interruptAiResponse();
+                    this.interruptCounter = 0; // 重置计数器
+                }
+            } else {
+                // 如果不是打断状态，重置计数器
+                this.interruptCounter = 0;
+            }
+        } else {
+            // 如果音量低，通常要重置计数器
+            // 防止音量波动导致偶尔高音量时的误触发
+            if (this.interruptCounter > 0) {
+                this.interruptCounter--;
             }
         }
     }
@@ -279,9 +297,16 @@ class VoiceChat {
      * @returns {Promise<boolean>} - 是否包含有效语音
      */
     async checkAudioValidity(audioBlob) {
-        if (!audioBlob || audioBlob.size < 1000) {
-            // 如果音频数据小于1KB，很可能就是噪音或静音
-            console.log('音频大小过小，不发送:', audioBlob.size, 'bytes');
+        // 保存用户方便调试的设置
+        const AUDIO_SIZE_THRESHOLD = 800;      // 最小文件大小 (字节)
+        const RMS_THRESHOLD = 0.005;           // RMS音量阈值 (0-1)
+        const SEGMENT_THRESHOLD = 0.015;       // 单片段音量阈值 (0-1)
+        const MIN_VALID_SEGMENTS = 2;         // 最少有效片段数
+        const SEGMENT_DURATION_MS = 100;      // 分析片段长度 (ms)
+        
+        // 检查音频大小
+        if (!audioBlob || audioBlob.size < AUDIO_SIZE_THRESHOLD) {
+            console.log(`音频太小 (${audioBlob?.size || 0} < ${AUDIO_SIZE_THRESHOLD} bytes), 不发送`);
             return false;
         }
         
@@ -293,57 +318,115 @@ class VoiceChat {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             
             // 解码音频数据
-            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            let audioBuffer;
+            try {
+                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            } catch (decodeError) {
+                console.error('音频解码错误:', decodeError);
+                audioContext.close();
+                return false; // 解码错误说明不是有效的音频数据
+            }
             
             // 获取音频样本数据
             const channelData = audioBuffer.getChannelData(0); // 获取第一个声道
             
+            // 检查是否是空音频或欠缺数据
+            if (!channelData || channelData.length === 0) {
+                console.log('音频数据为空');
+                audioContext.close();
+                return false;
+            }
+            
+            // 使用滤波处理降噪，减少背景噪音的影响
+            // 这里使用简单的移动平均代替正式的滤波器
+            const smoothedData = new Float32Array(channelData.length);
+            const smoothingFactor = 3; // 移动平均窗口大小
+            
+            for (let i = 0; i < channelData.length; i++) {
+                let sum = 0;
+                let count = 0;
+                for (let j = Math.max(0, i - smoothingFactor); j <= Math.min(channelData.length - 1, i + smoothingFactor); j++) {
+                    sum += Math.abs(channelData[j]);
+                    count++;
+                }
+                smoothedData[i] = sum / count;
+            }
+            
             // 计算RMS（均方根）值来判断音量大小
             let sumSquares = 0.0;
+            let peakValue = 0.0; // 整个音频的峰值
+            
             for (let i = 0; i < channelData.length; i++) {
                 sumSquares += channelData[i] * channelData[i];
+                peakValue = Math.max(peakValue, Math.abs(channelData[i]));
             }
+            
             const rms = Math.sqrt(sumSquares / channelData.length);
             
-            // 检查强度波动
+            // 检查强度波动，使用平滑后的数据
             // 计算每个分段内的最大值
-            const segmentSize = audioContext.sampleRate / 10; // 大约100ms的片段
-            const segments = Math.floor(channelData.length / segmentSize);
+            const segmentSize = Math.floor(audioContext.sampleRate * (SEGMENT_DURATION_MS / 1000));
+            const segments = Math.floor(smoothedData.length / segmentSize);
             let validSegments = 0;
+            let consecutiveValidSegments = 0; // 连续有效片段
+            let maxConsecutiveValidSegments = 0; // 最大连续有效片段
+            
+            const segmentValues = []; // 用于调试输出
             
             for (let i = 0; i < segments; i++) {
                 const start = i * segmentSize;
-                const end = start + segmentSize;
+                const end = Math.min(start + segmentSize, smoothedData.length);
                 
                 let maxValue = 0;
-                for (let j = start; j < end && j < channelData.length; j++) {
-                    maxValue = Math.max(maxValue, Math.abs(channelData[j]));
+                let avgValue = 0;
+                
+                for (let j = start; j < end; j++) {
+                    maxValue = Math.max(maxValue, smoothedData[j]);
+                    avgValue += smoothedData[j];
                 }
                 
+                avgValue /= (end - start);
+                segmentValues.push(maxValue.toFixed(3));
+                
                 // 判断此片段是否有有效语音
-                if (maxValue > 0.02) { // 调整这个阈值来控制灵敏度
+                if (maxValue > SEGMENT_THRESHOLD) {
                     validSegments++;
+                    consecutiveValidSegments++;
+                    maxConsecutiveValidSegments = Math.max(maxConsecutiveValidSegments, consecutiveValidSegments);
+                } else {
+                    consecutiveValidSegments = 0;
                 }
             }
             
             // 清理资源
             audioContext.close();
             
-            // 判断标准：
-            // 1. RMS值要足够大
-            // 2. 至少有3个有效片段
-            const isValidRMS = rms > 0.01; // 调整这个阈值来控制整体音量要求
-            const hasEnoughValidSegments = validSegments >= 3; // 至少要有三个有效片段
+            // 判断标准：综合考虑以下因素
+            // 1. RMS值
+            // 2. 峰值
+            // 3. 有效片段数量
+            // 4. 最大连续有效片段数
+            const isValidRMS = rms > RMS_THRESHOLD;
+            const isValidPeak = peakValue > 0.1; // 至少有一个强声音点
+            const hasEnoughValidSegments = validSegments >= MIN_VALID_SEGMENTS;
+            const hasConsecutiveSegments = maxConsecutiveValidSegments >= MIN_VALID_SEGMENTS;
+            
+            // 计算最终结果
+            const isValidAudio = (isValidRMS && hasEnoughValidSegments) || (isValidPeak && hasConsecutiveSegments);
             
             console.log(
                 '音频分析结果:',
                 `大小=${(audioBlob.size/1024).toFixed(2)}KB`,
+                `时长=${(audioBuffer.duration*1000).toFixed(0)}ms`,
+                `峰值=${peakValue.toFixed(3)}`,
                 `RMS=${rms.toFixed(4)}`,
                 `有效片段=${validSegments}/${segments}`,
-                `有效=${isValidRMS && hasEnoughValidSegments}`
+                `连续片段=${maxConsecutiveValidSegments}`,
+                `分段值=[${segmentValues.join(', ')}]`,
+                `结果=${isValidAudio ? '有效' : '无效'}`
             );
             
-            return isValidRMS && hasEnoughValidSegments;
+            return isValidAudio;
             
         } catch (error) {
             console.error('音频有效性检查出错:', error);
@@ -400,6 +483,29 @@ class VoiceChat {
      * 打断AI响应
      */
     interruptAiResponse() {
+        // 如果已经处于打断状态或不在响应中，避免重复打断
+        if (!this.isAiResponding || this.isInterrupting) {
+            return;
+        }
+        
+        // 设置打断标志，避免重复打断
+        this.isInterrupting = true;
+        
+        console.log("正在打断AI响应...");
+        
+        // 立即结束AI响应状态
+        this.isAiResponding = false;
+        
+        // 清除所有可能的EventSource连接
+        if (this.eventSource) {
+            try {
+                this.eventSource.close();
+                this.eventSource = null;
+            } catch (e) {
+                console.error('关闭EventSource时出错:', e);
+            }
+        }
+        
         // 向服务器发送打断请求
         fetch('/api/interrupt', {
             method: 'POST',
@@ -415,20 +521,26 @@ class VoiceChat {
             }
         }).catch(error => {
             console.error("发送打断请求时出错:", error);
+        }).finally(() => {
+            // 无论成功失败，都要重置打断标志
+            setTimeout(() => {
+                this.isInterrupting = false;
+            }, 1000); // 给服务器一些时间处理打断
         });
-        
-        // 立即结束AI响应状态
-        this.isAiResponding = false;
         
         // 添加打断指示
-        if (this.messageHandler.aiMessageElement) {
-            this.messageHandler.aiMessageElement.innerHTML += ' <span class="interrupt-indicator">[用户打断]</span>';
+        try {
+            if (this.messageHandler.aiMessageElement) {
+                this.messageHandler.aiMessageElement.innerHTML += ' <span class="interrupt-indicator">[用户打断]</span>';
+            }
+            
+            // 完成打字机效果
+            Typewriter.finalizeTypewriter(() => {
+                console.log("AI响应成功被打断");
+            });
+        } catch (e) {
+            console.error('更新UI时出错:', e);
         }
-        
-        // 完成打字机效果
-        Typewriter.finalizeTypewriter(() => {
-            console.log("AI响应被打断");
-        });
     }
     
     /**
