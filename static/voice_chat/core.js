@@ -328,26 +328,16 @@ class VoiceChat {
                 // 设置等待状态
                 this.waitingForAiResponse = true;
                 this.updateStatus("正在处理您的语音...");
-                
                 // 添加用户消息到聊天界面
                 this.addMessage('您', '[语音输入]', 'user');
-                
                 try {
-                    // 处理并发送音频
-                    const response = await fetch('/api/voice-chat', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            audio: audioBlob,
-                            session_id: this.sessionId
-                        })
-                    });
-                    
-                    // 处理流式响应
-                    await this.handleStreamResponse(response);
-                    
+                    // 先转base64
+                    const base64Audio = await this.audioRecorder.blobToBase64(audioBlob);
+                    // 通过messageHandler流式发送和处理
+                    if (this.messageHandler) {
+                        await this.messageHandler.sendMessage('', base64Audio);
+                    }
+                    this.waitingForAiResponse = false;
                     // 处理完成后，如果通话仍然活跃，开始新的录音
                     if (this.isCallActive) {
                         setTimeout(() => {
@@ -356,7 +346,6 @@ class VoiceChat {
                             }
                         }, 800);
                     }
-                    
                 } catch (error) {
                     console.error("处理录音失败:", error);
                     this.updateStatus("处理失败，正在重新启动录音");
