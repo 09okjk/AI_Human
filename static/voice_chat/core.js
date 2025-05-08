@@ -211,6 +211,23 @@ class VoiceChat {
         if (!audioBlob || !this.isSessionActive) return;
         
         try {
+            // 检查录音的有效性（判断用户是否真的在说话）
+            const isValidAudio = await this.checkAudioValidity(audioBlob);
+            
+            if (!isValidAudio) {
+                console.log('未检测到有效的语音内容，重新开始监听...');
+                this.setStatus('未检测到有效语音，请继续说话...');
+                
+                // 延迟少许时间再重新开始录音，避免用户回调函数堆叠
+                setTimeout(() => {
+                    if (this.isSessionActive && !this.isListening) {
+                        this.startListening();
+                    }
+                }, 500);
+                
+                return; // 直接返回，不发送请求
+            }
+            
             // 将Blob转换为Base64
             const base64Audio = await this.blobToBase64(audioBlob);
             
@@ -253,6 +270,85 @@ class VoiceChat {
             if (this.isSessionActive) {
                 setTimeout(() => this.startListening(), 1000);
             }
+        }
+    }
+    
+    /**
+     * 检查录音数据是否包含有效的语音内容
+     * @param {Blob} audioBlob - 要检查的音频Blob
+     * @returns {Promise<boolean>} - 是否包含有效语音
+     */
+    async checkAudioValidity(audioBlob) {
+        if (!audioBlob || audioBlob.size < 1000) {
+            // 如果音频数据小于1KB，很可能就是噪音或静音
+            console.log('音频大小过小，不发送:', audioBlob.size, 'bytes');
+            return false;
+        }
+        
+        try {
+            // 将音频blob转换为可分析的ArrayBuffer
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            
+            // 创建临时AudioContext进行分析
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // 解码音频数据
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            // 获取音频样本数据
+            const channelData = audioBuffer.getChannelData(0); // 获取第一个声道
+            
+            // 计算RMS（均方根）值来判断音量大小
+            let sumSquares = 0.0;
+            for (let i = 0; i < channelData.length; i++) {
+                sumSquares += channelData[i] * channelData[i];
+            }
+            const rms = Math.sqrt(sumSquares / channelData.length);
+            
+            // 检查强度波动
+            // 计算每个分段内的最大值
+            const segmentSize = audioContext.sampleRate / 10; // 大约100ms的片段
+            const segments = Math.floor(channelData.length / segmentSize);
+            let validSegments = 0;
+            
+            for (let i = 0; i < segments; i++) {
+                const start = i * segmentSize;
+                const end = start + segmentSize;
+                
+                let maxValue = 0;
+                for (let j = start; j < end && j < channelData.length; j++) {
+                    maxValue = Math.max(maxValue, Math.abs(channelData[j]));
+                }
+                
+                // 判断此片段是否有有效语音
+                if (maxValue > 0.02) { // 调整这个阈值来控制灵敏度
+                    validSegments++;
+                }
+            }
+            
+            // 清理资源
+            audioContext.close();
+            
+            // 判断标准：
+            // 1. RMS值要足够大
+            // 2. 至少有3个有效片段
+            const isValidRMS = rms > 0.01; // 调整这个阈值来控制整体音量要求
+            const hasEnoughValidSegments = validSegments >= 3; // 至少要有三个有效片段
+            
+            console.log(
+                '音频分析结果:',
+                `大小=${(audioBlob.size/1024).toFixed(2)}KB`,
+                `RMS=${rms.toFixed(4)}`,
+                `有效片段=${validSegments}/${segments}`,
+                `有效=${isValidRMS && hasEnoughValidSegments}`
+            );
+            
+            return isValidRMS && hasEnoughValidSegments;
+            
+        } catch (error) {
+            console.error('音频有效性检查出错:', error);
+            // 出错则默认允许通过，避免阻止正常录音
+            return true;
         }
     }
     
