@@ -186,12 +186,13 @@ class VoiceChat {
         this.updateStatus("正在处理您的语音...");
         
         try {
-            // 使用录音对话功能处理音频并发送
-            const response = await this.audioRecorder.processAudioAndSend(audioBlob, this.sessionId);
-            
-            // 处理响应，但重写响应处理逻辑，使其完成后自动启动下一轮录音
-            this.handleResponse(response);
-            
+            // 只负责转base64，不直接请求
+            const base64Audio = await this.audioRecorder.blobToBase64(audioBlob);
+            // 通过messageHandler流式发送和处理
+            if (this.messageHandler) {
+                await this.messageHandler.sendMessage('', base64Audio);
+            }
+            this.waitingForAiResponse = false;
         } catch (error) {
             console.error("处理录音失败:", error);
             this.updateStatus("处理失败，正在重新启动录音");
