@@ -211,19 +211,40 @@ class VoiceChat {
         if (!audioBlob || !this.isSessionActive) return;
         
         try {
-            // 处理音频并发送到服务器
-            const response = await this.recorder.processAudioAndSend(audioBlob, this.sessionId);
+            // 将Blob转换为Base64
+            const base64Audio = await this.blobToBase64(audioBlob);
             
-            if (response && response.success) {
-                // 切换为AI响应状态
-                this.isAiResponding = true;
-                this.setStatus("AI正在回复...");
-                
-                // 处理SSE流响应
-                await this.handleAiResponse(response);
-            } else {
-                throw new Error("服务器响应错误");
+            // 直接使用/api/chat接口发送音频数据
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    audio: base64Audio,
+                    session_id: this.sessionId
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`服务器响应错误: ${response.status}`);
             }
+            
+            // 切换为AI响应状态
+            this.isAiResponding = true;
+            this.setStatus("AI正在回复...");
+            
+            // 使用MessageHandler直接处理响应
+            // 不需要再添加用户消息，sendMessage会处理
+            this.messageHandler.sendMessage('', base64Audio);
+            
+            // 添加一个监听器，当收到第一个响应时启动新的录音
+            // 以支持打断功能
+            setTimeout(() => {
+                if (this.isSessionActive && !this.isListening) {
+                    this.startListening();
+                }
+            }, 2000); // 等待一段时间后重新开始监听
         } catch (error) {
             console.error("处理录音时出错:", error);
             this.messageHandler.appendMessage("⚠️ 处理录音时出错，请重试", "system");
@@ -236,84 +257,47 @@ class VoiceChat {
     }
     
     /**
-     * 处理AI响应
-     * @param {Object} response - 服务器响应
+     * 将Blob转换为Base64格式
+     * @param {Blob} blob - 音频blob
+     * @returns {Promise<string>} - Base64字符串
      */
-    async handleAiResponse(response) {
-        try {
-            // 创建EventSource或使用MessageHandler处理流式响应
-            const eventSource = new EventSource(`/api/stream-response?session_id=${this.sessionId}`);
-            
-            // 是否收到第一条消息
-            let firstMessageReceived = false;
-            
-            eventSource.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                // 如果是第一条消息，重新开始监听以支持打断功能
-                if (!firstMessageReceived) {
-                    firstMessageReceived = true;
-                    console.log("收到第一条响应，重新开始监听以支持打断功能");
-                    setTimeout(() => {
-                        if (this.isSessionActive && !this.isListening) {
-                            this.startListening();
-                        }
-                    }, 500);
-                }
-                
-                // 处理不同类型的消息
-                if (data.type === 'text') {
-                    Typewriter.addToTypingBuffer(data.content, false);
-                    Typewriter.startTypewriter(this.messageHandler.aiMessageElement, this.chatMessages);
-                } 
-                else if (data.type === 'audio') {
-                    this.audioSystem.addAudioChunk(data.content);
-                }
-                else if (data.type === 'end') {
-                    // 响应结束
-                    eventSource.close();
-                    this.onAiResponseComplete();
-                }
-            };
-            
-            eventSource.onerror = (error) => {
-                console.error("EventSource错误:", error);
-                eventSource.close();
-                this.onAiResponseComplete();
-            };
-            
-            // 创建AI回复的消息占位符
-            this.messageHandler.aiMessageElement = document.createElement('div');
-            this.messageHandler.aiMessageElement.className = 'message ai-message';
-            this.messageHandler.aiMessageElement.innerHTML = '<div class="typing-indicator">AI 正在回复...</div>';
-            this.chatMessages.appendChild(this.messageHandler.aiMessageElement);
-            this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
-            
-            // 重置打字机
-            Typewriter.resetTypewriter();
-            
-        } catch (error) {
-            console.error("处理AI响应时出错:", error);
-            this.onAiResponseComplete();
-        }
+    blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+    
+    /**
+     * 处理AI响应 - 简化版
+     * 现在我们使用MessageHandler直接处理响应，不需要复杂的EventSource逻辑
+     * @param {Event} event - 消息事件
+     */
+    handleAiResponse(event) {
+        // 该方法保留为兼容性目的，实际上现在用不到
+        console.log('新版中移除了单独的响应处理逻辑，使用MessageHandler处理');
+        
+        // 如果需要，可以在此添加额外的响应处理逻辑
     }
     
     /**
      * AI响应完成回调
+     * 这个方法在MessageHandler完成处理消息后会被自动调用
      */
     onAiResponseComplete() {
-        this.isAiResponding = false;
-        this.setStatus("等待用户输入...");
-        
-        // 完成打字机效果
-        Typewriter.finalizeTypewriter(() => {
-            console.log("AI响应完成");
+        // 等待一小段时间确保所有消息已完成处理
+        setTimeout(() => {
+            this.isAiResponding = false;
+            this.setStatus("等待用户输入...");
             
-            // 如果会话仍然活跃且没有正在监听，开始新一轮监听
+            // 如果会话仍然活跃且没有正在监听，确保开始新一轮监听
             if (this.isSessionActive && !this.isListening) {
-                setTimeout(() => this.startListening(), 500);
+                console.log("响应完成，重新开始监听用户输入");
+                this.startListening();
             }
-        });
+        }, 1000); // 等待1秒确保所有响应已完成
     }
     
     /**
